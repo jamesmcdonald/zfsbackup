@@ -99,8 +99,8 @@ func (b *Backup) createSnapshot(vol string, recurse bool) (string, error) {
 	return snap, nil
 }
 
-func (b *Backup) runBackup(vol string, startSnap string, endSnap string) error {
-	// Run zfs send/receive here
+func (b *Backup) runBackup(vol, startSnap, endSnap string) error {
+	slog.Info("backup starting", "vol", vol, "start", startSnap, "end", endSnap)
 	sendArgs := []string{"zfs", "send", "-R", "-i", startSnap, endSnap}
 	receiveArgs := []string{"zfs", "receive", fmt.Sprintf("%s/%s", b.target, vol)}
 	cmdSend := exec.Command(sendArgs[0], sendArgs[1:]...)
@@ -120,8 +120,45 @@ func (b *Backup) runBackup(vol string, startSnap string, endSnap string) error {
 		return fmt.Errorf("error during zfs receive: %s: %w", string(output), err)
 	}
 
+	slog.Info("backup complete", "vol", vol, "start", startSnap, "end", endSnap)
 	return nil
 
+}
+
+func (b *Backup) deleteSnapshot(snap string, recurse bool) error {
+	args := []string{"zfs", "destroy", snap}
+	if recurse {
+		args = append(args, "-r")
+	}
+	slog.Info("deleting snapshot", "snap", snap)
+	_, stderr, err := b.runCommand(false, args[0], args[1:]...)
+	if err != nil {
+		return fmt.Errorf("error deleting snapshot: %w: %s", err, stderr)
+	}
+	return nil
+}
+
+func (b *Backup) cleanSnapshots(vol string, retain int) error {
+	snaps, err := b.listSnapshots(vol)
+	if err != nil {
+		return err
+	}
+	slog.Info("cleaning snapshots", "vol", vol, "retain", retain, "snaps", len(snaps))
+	if retain < 1 {
+		slog.Warn("retain too low, retaining 1 snap", "retain", retain)
+		retain = 1
+	}
+	if len(snaps) <= retain {
+		slog.Debug("not cleaning snaps", "snaps", len(snaps), "retain", retain)
+		return nil
+	}
+	for _, snap := range snaps[:len(snaps)-retain] {
+		err := b.deleteSnapshot(snap, true)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (b *Backup) IncrementalBackup(vol string) error {
@@ -143,8 +180,13 @@ func (b *Backup) IncrementalBackup(vol string) error {
 		return err
 	}
 	// Run backup
-	b.runBackup(vol, snap, newsnap)
+	err = b.runBackup(vol, snap, newsnap)
+	if err != nil {
+		return err
+	}
 	// Clean up old snapshots on source
+	err = b.cleanSnapshots(vol, 2)
 	// Clean up old snapshots on target
+	err = b.cleanSnapshots(targetVolume, 2)
 	return nil
 }
