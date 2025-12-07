@@ -12,11 +12,13 @@ import (
 type Backup struct {
 	dryrun bool
 	target string
+	debug  bool
 }
 
 func NewBackup(target string) *Backup {
 	return &Backup{
 		target: target,
+		debug:  true,
 	}
 }
 
@@ -79,11 +81,47 @@ func (b *Backup) snapshotExists(vol string, snapshot string) bool {
 	return true
 }
 
-func (b *Backup) createSnapshot(vol string) (string, error) {
+func (b *Backup) createSnapshot(vol string, recurse bool) (string, error) {
 	now := time.Now()
-	snap := now.Format("2006-01-02T15:04:05")
-	fmt.Printf("new snapshot %s\n", snap)
+	snapName := now.Format("2006-01-02T15:04:05")
+	slog.Info("creating snapshot", "vol", vol, "snapshot", snapName, "recurse", recurse)
+	snap := fmt.Sprintf("%s@%s", vol, snapName)
+	args := []string{"zfs", "snapshot"}
+	if recurse {
+		args = append(args, "-r")
+	}
+	args = append(args, snap)
+	_, stderr, err := b.runCommand(false, args[0], args[1:]...)
+	if err != nil {
+		return "", fmt.Errorf("error creating snapshot: %s: %v", stderr, err)
+	}
+
 	return snap, nil
+}
+
+func (b *Backup) runBackup(vol string, startSnap string, endSnap string) error {
+	// Run zfs send/receive here
+	sendArgs := []string{"zfs", "send", "-R", "-i", startSnap, endSnap}
+	receiveArgs := []string{"zfs", "receive", fmt.Sprintf("%s/%s", b.target, vol)}
+	cmdSend := exec.Command(sendArgs[0], sendArgs[1:]...)
+	cmdReceive := exec.Command(receiveArgs[0], receiveArgs[1:]...)
+	sendOut, err := cmdSend.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("error setting up pipe: %w", err)
+	}
+	cmdReceive.Stdin = sendOut
+
+	if err := cmdSend.Start(); err != nil {
+		return fmt.Errorf("error starting zfs send: %w", err)
+	}
+
+	output, err := cmdReceive.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("error during zfs receive: %s: %w", string(output), err)
+	}
+
+	return nil
+
 }
 
 func (b *Backup) IncrementalBackup(vol string) error {
@@ -97,11 +135,15 @@ func (b *Backup) IncrementalBackup(vol string) error {
 	if !b.snapshotExists(targetVolume, snapName) {
 		return fmt.Errorf("snapshot %s of volume %s not found", snapName, targetVolume)
 	}
-	fmt.Printf("Incremental backup starting from snapshot %s\n", snap)
+	slog.Info("incremental backup start", "snap", snap)
 
 	// Create new snapshot
-	b.createSnapshot(vol)
+	newsnap, err := b.createSnapshot(vol, true)
+	if err != nil {
+		return err
+	}
 	// Run backup
+	b.runBackup(vol, snap, newsnap)
 	// Clean up old snapshots on source
 	// Clean up old snapshots on target
 	return nil
