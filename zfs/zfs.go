@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 )
@@ -72,6 +73,30 @@ func (b *Backup) getLatestSnapshot(vol string) (string, error) {
 	return snaps[len(snaps)-1], nil
 }
 
+func (b *Backup) getLatestMatchingSnapshot(source, target string) (string, error) {
+	sourceSnaps, err := b.listSnapshots(source)
+	if err != nil {
+		return "", err
+	}
+	targetSnaps, err := b.listSnapshots(target)
+	if err != nil {
+		return "", err
+	}
+
+	for i := len(sourceSnaps) - 1; i >= 0; i-- {
+		at := strings.Index(sourceSnaps[i], "@")
+		if at < 0 {
+			continue
+		}
+		snappart := sourceSnaps[i][at:]
+		targetseek := fmt.Sprintf("%s%s", target, snappart)
+		if slices.Contains(targetSnaps, targetseek) {
+			return sourceSnaps[i], nil
+		}
+	}
+	return "", fmt.Errorf("no matching snapshot found")
+}
+
 func (b *Backup) snapshotExists(vol string, snapshot string) bool {
 	snapshotName := fmt.Sprintf("%s@%s", vol, snapshot)
 	_, _, err := b.runCommand(true, "zfs", "list", "-H", "-t", "snapshot", snapshotName)
@@ -102,7 +127,7 @@ func (b *Backup) createSnapshot(vol string, recurse bool) (string, error) {
 func (b *Backup) runBackup(vol, startSnap, endSnap string) error {
 	slog.Info("backup starting", "vol", vol, "start", startSnap, "end", endSnap)
 	sendArgs := []string{"zfs", "send", "-R", "-i", startSnap, endSnap}
-	receiveArgs := []string{"zfs", "receive", fmt.Sprintf("%s/%s", b.target, vol)}
+	receiveArgs := []string{"zfs", "receive", "-F", fmt.Sprintf("%s/%s", b.target, vol)}
 	cmdSend := exec.Command(sendArgs[0], sendArgs[1:]...)
 	cmdReceive := exec.Command(receiveArgs[0], receiveArgs[1:]...)
 	sendOut, err := cmdSend.StdoutPipe()
@@ -138,6 +163,20 @@ func (b *Backup) deleteSnapshot(snap string, recurse bool) error {
 	return nil
 }
 
+func isBackupSnapshot(snapshotName string) bool {
+	parts := strings.Split(snapshotName, "@")
+	if len(parts) != 2 {
+		return false
+	}
+
+	timestampPart := parts[1]
+
+	const layout = "2006-01-02T15:04:05"
+	_, err := time.Parse(layout, timestampPart)
+
+	return err == nil
+}
+
 func (b *Backup) cleanSnapshots(vol string, retain int) error {
 	snaps, err := b.listSnapshots(vol)
 	if err != nil {
@@ -152,7 +191,18 @@ func (b *Backup) cleanSnapshots(vol string, retain int) error {
 		slog.Debug("not cleaning snaps", "snaps", len(snaps), "retain", retain)
 		return nil
 	}
-	for _, snap := range snaps[:len(snaps)-retain] {
+	saved := 0
+	for i := len(snaps) - 1; i >= 0; i-- {
+		snap := snaps[i]
+		if !isBackupSnapshot(snap) {
+			slog.Debug("skipping non-backup snapshot", "snap", snap)
+			continue
+		}
+		if saved < retain {
+			slog.Debug("retaining snapshot", "snap", snap)
+			saved++
+			continue
+		}
 		err := b.deleteSnapshot(snap, true)
 		if err != nil {
 			return err
@@ -162,7 +212,7 @@ func (b *Backup) cleanSnapshots(vol string, retain int) error {
 }
 
 func (b *Backup) IncrementalBackup(vol string) error {
-	snap, err := b.getLatestSnapshot(vol)
+	snap, err := b.getLatestMatchingSnapshot(vol, fmt.Sprintf("%s/%s", b.target, vol))
 	if err != nil {
 		return err
 	}
@@ -187,6 +237,6 @@ func (b *Backup) IncrementalBackup(vol string) error {
 	// Clean up old snapshots on source
 	err = b.cleanSnapshots(vol, 2)
 	// Clean up old snapshots on target
-	err = b.cleanSnapshots(targetVolume, 2)
+	// err = b.cleanSnapshots(targetVolume, 2)
 	return nil
 }
