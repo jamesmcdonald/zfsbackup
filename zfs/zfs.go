@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jamesmcdonald/zfsbackup/util"
 )
 
 type Backup struct {
@@ -257,7 +259,7 @@ func (b *Backup) IncrementalBackup(vol string) error {
 	if err != nil {
 		return err
 	}
-	slog.Info("estimated backup size", "size", size)
+	slog.Info("estimated backup size", "size", size, "human_size", util.PrettyBytes(size))
 	// Run backup
 	err = b.runBackup(vol, snap, newsnap)
 	if err != nil {
