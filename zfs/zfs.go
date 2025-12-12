@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -147,7 +148,30 @@ func (b *Backup) runBackup(vol, startSnap, endSnap string) error {
 
 	slog.Info("backup complete", "vol", vol, "start", startSnap, "end", endSnap)
 	return nil
+}
 
+func (b *Backup) dryrunBackup(vol, startSnap, endSnap string) (int64, error) {
+	slog.Info("performing dry run", "vol", vol, "start", startSnap, "end", endSnap)
+	sendArgs := []string{"zfs", "send", "-n", "-P", "-R", "-i", startSnap, endSnap}
+	lines, stderr, err := b.runCommand(true, sendArgs[0], sendArgs[1:]...)
+	if err != nil {
+		return 0, fmt.Errorf("error with dry run: %w: %s", err, stderr)
+	}
+	var size int64
+	for _, l := range lines {
+		parts := strings.Split(strings.TrimSpace(l), "\t")
+		if parts[0] == "size" {
+			size, err = strconv.ParseInt(parts[1], 10, 64)
+			if err != nil {
+				return 0, fmt.Errorf("size parse error: %w", err)
+			}
+			break
+		}
+	}
+	if size == 0 {
+		return 0, fmt.Errorf("backup size 0")
+	}
+	return size, nil
 }
 
 func (b *Backup) deleteSnapshot(snap string, recurse bool) error {
@@ -229,6 +253,11 @@ func (b *Backup) IncrementalBackup(vol string) error {
 	if err != nil {
 		return err
 	}
+	size, err := b.dryrunBackup(vol, snap, newsnap)
+	if err != nil {
+		return err
+	}
+	slog.Info("estimated backup size", "size", size)
 	// Run backup
 	err = b.runBackup(vol, snap, newsnap)
 	if err != nil {
