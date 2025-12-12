@@ -11,20 +11,20 @@ const (
 	eB
 )
 
-func PrettyBytes(size int64) string {
+func HumanBytes(size int64) string {
 	switch {
 	case size >= eB:
-		return format(size, eB, "EB")
+		return format(size, eB, "EiB")
 	case size >= pB:
-		return format(size, pB, "PB")
+		return format(size, pB, "PiB")
 	case size >= tB:
-		return format(size, tB, "TB")
+		return format(size, tB, "TiB")
 	case size >= gB:
-		return format(size, gB, "GB")
+		return format(size, gB, "GiB")
 	case size >= mB:
-		return format(size, mB, "MB")
+		return format(size, mB, "MiB")
 	case size >= kB:
-		return format(size, kB, "kB")
+		return format(size, kB, "kiB")
 	default:
 		return fmt.Sprintf("%d B", size)
 	}

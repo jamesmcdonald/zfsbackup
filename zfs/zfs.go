@@ -259,7 +259,7 @@ func (b *Backup) IncrementalBackup(vol string) error {
 	if err != nil {
 		return err
 	}
-	slog.Info("estimated backup size", "size", size, "human_size", util.PrettyBytes(size))
+	slog.Info("estimated backup size", "size", size, "human_size", util.HumanBytes(size))
 	// Run backup
 	err = b.runBackup(vol, snap, newsnap)
 	if err != nil {
