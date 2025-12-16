@@ -35,10 +35,12 @@ zfsbackup <source-fs> [flags]
 ### Flags
 
 - `-t, --target-fs string`: Target filesystem (default: "backup")
-- `-n, --dry-run`: Perform a trial run with no changes made
+- `-n, --dry-run`: This *does not disable anything* yet. Be warned. Once implemented it will just check that matching snapshots exist.
 - `-d, --debug`: Enable debug output
 - `-S, --source-command string`: Source ZFS command (default: "zfs")
 - `-T, --target-command string`: Target ZFS command (default: "zfs")
+
+  You can use this to back up over ssh, for example `-T 'ssh backuphost zfs'`.
 
 ### Examples
 
