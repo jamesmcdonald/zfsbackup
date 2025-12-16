@@ -14,24 +14,67 @@ import (
 )
 
 type Backup struct {
-	dryrun bool
-	target string
-	debug  bool
+	target    string
+	dryrun    bool
+	debug     bool
+	sourceCmd []string
+	targetCmd []string
 }
 
-func NewBackup(target string) *Backup {
-	return &Backup{
-		target: target,
-		debug:  true,
+type BackupOption func(*Backup) error
+
+func WithDryRunOption() BackupOption {
+	return func(b *Backup) error {
+		b.dryrun = true
+		return nil
 	}
 }
 
-func (b *Backup) runCommand(allowdryrun bool, name string, args ...string) ([]string, string, error) {
+func WithDebugOption() BackupOption {
+	return func(b *Backup) error {
+		b.debug = true
+		return nil
+	}
+}
+
+func WithSourceCommandOption(cmd []string) BackupOption {
+	return func(b *Backup) error {
+		b.sourceCmd = cmd
+		return nil
+	}
+}
+
+func WithTargetCommandOption(cmd []string) BackupOption {
+	return func(b *Backup) error {
+		b.targetCmd = cmd
+		return nil
+	}
+}
+
+func NewBackup(target string, opts ...BackupOption) (*Backup, error) {
+	if target == "" {
+		return nil, fmt.Errorf("target filesystem cannot be empty")
+	}
+	b := &Backup{
+		target:    target,
+		sourceCmd: []string{"zfs"},
+		targetCmd: []string{"zfs"},
+	}
+	for _, opt := range opts {
+		err := opt(b)
+		if err != nil {
+			return nil, fmt.Errorf("error applying option: %w", err)
+		}
+	}
+	return b, nil
+}
+
+func (b *Backup) runCommand(allowdryrun bool, args ...string) ([]string, string, error) {
 	if b.dryrun && !allowdryrun {
-		slog.Info("Skipping command due to dry run", "command", name, "args", args)
+		slog.Info("Skipping command due to dry run", "args", args)
 		return []string{}, "", nil
 	}
-	c := exec.Command(name, args...)
+	c := exec.Command(args[0], args[1:]...)
 
 	var stdoutBuf, stderrBuf bytes.Buffer
 	c.Stdout = &stdoutBuf
@@ -58,7 +101,14 @@ func (b *Backup) runCommand(allowdryrun bool, name string, args ...string) ([]st
 }
 
 func (b *Backup) listSnapshots(vol string) ([]string, error) {
-	snaps, stderr, err := b.runCommand(true, "zfs", "list", "-H", "-o", "name", "-t", "snapshot", "-s", "creation", vol)
+	var args []string
+	if strings.HasPrefix(vol, b.target+"/") {
+		args = slices.Clone(b.targetCmd)
+	} else {
+		args = slices.Clone(b.sourceCmd)
+	}
+	args = append(args, "list", "-H", "-o", "name", "-t", "snapshot", "-s", "creation", vol)
+	snaps, stderr, err := b.runCommand(true, args...)
 	if err != nil {
 		return nil, fmt.Errorf("error listing snapshots: %s: %v", stderr, err)
 	}
@@ -102,7 +152,14 @@ func (b *Backup) getLatestMatchingSnapshot(source, target string) (string, error
 
 func (b *Backup) snapshotExists(vol string, snapshot string) bool {
 	snapshotName := fmt.Sprintf("%s@%s", vol, snapshot)
-	_, _, err := b.runCommand(true, "zfs", "list", "-H", "-t", "snapshot", snapshotName)
+	var args []string
+	if strings.HasPrefix(vol, b.target+"/") {
+		args = slices.Clone(b.targetCmd)
+	} else {
+		args = slices.Clone(b.sourceCmd)
+	}
+	args = append(args, "list", "-H", "-t", "snapshot", snapshotName)
+	_, _, err := b.runCommand(true, args...)
 	if err != nil {
 		return false
 	}
@@ -114,12 +171,13 @@ func (b *Backup) createSnapshot(vol string, recurse bool) (string, error) {
 	snapName := now.Format("2006-01-02T15:04:05")
 	slog.Info("creating snapshot", "vol", vol, "snapshot", snapName, "recurse", recurse)
 	snap := fmt.Sprintf("%s@%s", vol, snapName)
-	args := []string{"zfs", "snapshot"}
+	args := slices.Clone(b.sourceCmd)
+	args = append(args, "snapshot")
 	if recurse {
 		args = append(args, "-r")
 	}
 	args = append(args, snap)
-	_, stderr, err := b.runCommand(false, args[0], args[1:]...)
+	_, stderr, err := b.runCommand(false, args...)
 	if err != nil {
 		return "", fmt.Errorf("error creating snapshot: %s: %v", stderr, err)
 	}
@@ -129,8 +187,10 @@ func (b *Backup) createSnapshot(vol string, recurse bool) (string, error) {
 
 func (b *Backup) runBackup(vol, startSnap, endSnap string) error {
 	slog.Info("backup starting", "vol", vol, "start", startSnap, "end", endSnap)
-	sendArgs := []string{"zfs", "send", "-R", "-i", startSnap, endSnap}
-	receiveArgs := []string{"zfs", "receive", "-F", fmt.Sprintf("%s/%s", b.target, vol)}
+	sendArgs := slices.Clone(b.sourceCmd)
+	sendArgs = append(sendArgs, "send", "-R", "-i", startSnap, endSnap)
+	receiveArgs := slices.Clone(b.targetCmd)
+	receiveArgs = append(receiveArgs, "receive", "-F", fmt.Sprintf("%s/%s", b.target, vol))
 	cmdSend := exec.Command(sendArgs[0], sendArgs[1:]...)
 	cmdReceive := exec.Command(receiveArgs[0], receiveArgs[1:]...)
 	sendOut, err := cmdSend.StdoutPipe()
@@ -154,8 +214,9 @@ func (b *Backup) runBackup(vol, startSnap, endSnap string) error {
 
 func (b *Backup) dryrunBackup(vol, startSnap, endSnap string) (int64, error) {
 	slog.Info("performing dry run", "vol", vol, "start", startSnap, "end", endSnap)
-	sendArgs := []string{"zfs", "send", "-n", "-P", "-R", "-i", startSnap, endSnap}
-	lines, stderr, err := b.runCommand(true, sendArgs[0], sendArgs[1:]...)
+	sendArgs := slices.Clone(b.sourceCmd)
+	sendArgs = append(sendArgs, "send", "-n", "-P", "-R", "-i", startSnap, endSnap)
+	lines, stderr, err := b.runCommand(true, sendArgs...)
 	if err != nil {
 		return 0, fmt.Errorf("error with dry run: %w: %s", err, stderr)
 	}
@@ -177,12 +238,18 @@ func (b *Backup) dryrunBackup(vol, startSnap, endSnap string) (int64, error) {
 }
 
 func (b *Backup) deleteSnapshot(snap string, recurse bool) error {
-	args := []string{"zfs", "destroy", snap}
+	var args []string
+	if strings.HasPrefix(snap, b.target+"/") {
+		args = slices.Clone(b.targetCmd)
+	} else {
+		args = slices.Clone(b.sourceCmd)
+	}
+	args = append(args, "destroy", snap)
 	if recurse {
 		args = append(args, "-r")
 	}
 	slog.Info("deleting snapshot", "snap", snap)
-	_, stderr, err := b.runCommand(false, args[0], args[1:]...)
+	_, stderr, err := b.runCommand(false, args...)
 	if err != nil {
 		return fmt.Errorf("error deleting snapshot: %w: %s", err, stderr)
 	}
