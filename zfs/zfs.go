@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"slices"
 	"strconv"
@@ -185,7 +186,20 @@ func (b *Backup) createSnapshot(vol string, recurse bool) (string, error) {
 	return snap, nil
 }
 
-func (b *Backup) runBackup(vol, startSnap, endSnap string) error {
+func pv(size int64) (*exec.Cmd, error) {
+	if size <= 0 {
+		return nil, fmt.Errorf("invalid size for pv: %d", size)
+	}
+	pv, err := exec.LookPath("pv")
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.Command(pv, "-s", strconv.FormatInt(size, 10))
+	slog.Debug("using pv for progress", "size", size)
+	return cmd, nil
+}
+
+func (b *Backup) runBackup(vol, startSnap, endSnap string, size int64) error {
 	slog.Info("backup starting", "vol", vol, "start", startSnap, "end", endSnap)
 	sendArgs := slices.Clone(b.sourceCmd)
 	sendArgs = append(sendArgs, "send", "-R", "-i", startSnap, endSnap)
@@ -197,7 +211,24 @@ func (b *Backup) runBackup(vol, startSnap, endSnap string) error {
 	if err != nil {
 		return fmt.Errorf("error setting up pipe: %w", err)
 	}
-	cmdReceive.Stdin = sendOut
+
+	cmdPv, err := pv(size)
+	if err == nil {
+		cmdPv.Stderr = os.Stderr
+		pvOut, err := cmdPv.StdoutPipe()
+		if err == nil {
+			cmdPv.Stdin = sendOut
+			cmdReceive.Stdin = pvOut
+			if err := cmdPv.Start(); err != nil {
+				return fmt.Errorf("error starting pv: %w", err)
+			}
+			slog.Debug("pv started for backup")
+		} else {
+			cmdReceive.Stdin = sendOut
+		}
+	} else {
+		cmdReceive.Stdin = sendOut
+	}
 
 	if err := cmdSend.Start(); err != nil {
 		return fmt.Errorf("error starting zfs send: %w", err)
@@ -328,7 +359,7 @@ func (b *Backup) IncrementalBackup(vol string) error {
 	}
 	slog.Info("estimated backup size", "size", size, "human_size", util.HumanBytes(size))
 	// Run backup
-	err = b.runBackup(vol, snap, newsnap)
+	err = b.runBackup(vol, snap, newsnap, size)
 	if err != nil {
 		return err
 	}
