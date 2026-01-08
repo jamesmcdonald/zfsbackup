@@ -67,33 +67,151 @@ func NewBackup(target string, opts ...BackupOption) (*Backup, error) {
 			return nil, fmt.Errorf("error applying option: %w", err)
 		}
 	}
+
+	// Validate command configurations
+	if len(b.sourceCmd) == 0 {
+		return nil, fmt.Errorf("source command cannot be empty")
+	}
+	if len(b.targetCmd) == 0 {
+		return nil, fmt.Errorf("target command cannot be empty")
+	}
+
 	return b, nil
 }
 
-func (b *Backup) runCommand(allowdryrun bool, args ...string) ([]string, string, error) {
-	if b.dryrun && !allowdryrun {
+func (b *Backup) isTargetVolume(vol string) bool {
+	target := strings.TrimSuffix(b.target, "/")
+	return strings.HasPrefix(vol, target+"/")
+}
+
+func (b *Backup) buildCommand(isTarget bool, args ...string) []string {
+	var base []string
+	if isTarget {
+		base = slices.Clone(b.targetCmd)
+	} else {
+		base = slices.Clone(b.sourceCmd)
+	}
+	return append(base, args...)
+}
+
+func (b *Backup) wrapCmdError(operation string, stderr string, err error) error {
+	if stderr != "" {
+		return fmt.Errorf("error %s: %s: %w", operation, stderr, err)
+	}
+	return fmt.Errorf("error %s: %w", operation, err)
+}
+
+func splitSnapshot(fullName string) (vol, snap string) {
+	parts := strings.Split(fullName, "@")
+	if len(parts) == 2 {
+		return parts[0], parts[1]
+	}
+	return fullName, ""
+}
+
+func (b *Backup) runCommand(args ...string) ([]string, string, error) {
+	if b.dryrun {
 		slog.Info("Skipping command due to dry run", "args", args)
 		return []string{}, "", nil
 	}
-	c := exec.Command(args[0], args[1:]...)
+	return b.runPipeline([][]string{args})
+}
 
+func (b *Backup) runPipeline(allCmds [][]string) ([]string, string, error) {
+	if b.dryrun {
+		slog.Info("Skipping pipeline due to dry run", "cmds", allCmds)
+		return []string{}, "", nil
+	}
+
+	// If only one command, use simple execution
+	if len(allCmds) == 1 {
+		c := exec.Command(allCmds[0][0], allCmds[0][1:]...)
+		var stdoutBuf, stderrBuf bytes.Buffer
+		c.Stdout = &stdoutBuf
+		c.Stderr = &stderrBuf
+
+		err := c.Run()
+
+		stdoutLines := []string{}
+		if stdoutBuf.Len() > 0 {
+			stdoutLines = strings.Split(strings.TrimRight(stdoutBuf.String(), "\n"), "\n")
+		}
+
+		if err == nil {
+			return stdoutLines, "", nil
+		}
+
+		stderrStr := strings.TrimSpace(stderrBuf.String())
+		if stderrStr == "" {
+			stderrStr = err.Error()
+		}
+
+		return stdoutLines, stderrStr, err
+	}
+
+	// Pipeline execution with arbitrary number of commands
+	if len(allCmds) < 2 {
+		return nil, "", fmt.Errorf("pipeline needs at least 2 commands")
+	}
+
+	// Build command chain
+	var cmds []*exec.Cmd
+	for _, cmdArgs := range allCmds {
+		if len(cmdArgs) == 0 {
+			return nil, "", fmt.Errorf("empty command in pipeline")
+		}
+		cmds = append(cmds, exec.Command(cmdArgs[0], cmdArgs[1:]...))
+	}
+
+	// Connect pipes
+	for i := 0; i < len(cmds)-1; i++ {
+		stdout, err := cmds[i].StdoutPipe()
+		if err != nil {
+			return nil, "", fmt.Errorf("error setting up pipe: %w", err)
+		}
+		cmds[i+1].Stdin = stdout
+	}
+
+	// Set up stderr for pv if present (keeping the magic for now)
+	for i, cmd := range cmds {
+		if i > 0 && i < len(cmds)-1 && len(cmd.Args) > 0 && strings.HasSuffix(cmd.Args[0], "pv") {
+			cmd.Stderr = os.Stderr
+		}
+	}
+
+	// Capture final output
 	var stdoutBuf, stderrBuf bytes.Buffer
-	c.Stdout = &stdoutBuf
-	c.Stderr = &stderrBuf
+	cmds[len(cmds)-1].Stdout = &stdoutBuf
+	cmds[len(cmds)-1].Stderr = &stderrBuf
 
-	err := c.Run()
+	// Start all commands
+	for i, cmd := range cmds {
+		if err := cmd.Start(); err != nil {
+			return nil, "", fmt.Errorf("error starting command %d: %w", i, err)
+		}
+	}
+
+	// Wait for all commands and collect errors
+	var errs []error
+	for i, cmd := range cmds {
+		if err := cmd.Wait(); err != nil {
+			errs = append(errs, fmt.Errorf("command %d failed: %w", i, err))
+		}
+	}
 
 	stdoutLines := []string{}
 	if stdoutBuf.Len() > 0 {
 		stdoutLines = strings.Split(strings.TrimRight(stdoutBuf.String(), "\n"), "\n")
 	}
 
-	if err == nil {
+	stderrStr := strings.TrimSpace(stderrBuf.String())
+
+	if len(errs) == 0 {
 		return stdoutLines, "", nil
 	}
 
-	stderrStr := strings.TrimSpace(stderrBuf.String())
-
+	// Return the first error with stderr
+	err := errs[0]
 	if stderrStr == "" {
 		stderrStr = err.Error()
 	}
@@ -102,16 +220,10 @@ func (b *Backup) runCommand(allowdryrun bool, args ...string) ([]string, string,
 }
 
 func (b *Backup) listSnapshots(vol string) ([]string, error) {
-	var args []string
-	if strings.HasPrefix(vol, b.target+"/") {
-		args = slices.Clone(b.targetCmd)
-	} else {
-		args = slices.Clone(b.sourceCmd)
-	}
-	args = append(args, "list", "-H", "-o", "name", "-t", "snapshot", "-s", "creation", vol)
-	snaps, stderr, err := b.runCommand(true, args...)
+	args := b.buildCommand(b.isTargetVolume(vol), "list", "-H", "-o", "name", "-t", "snapshot", "-s", "creation", vol)
+	snaps, stderr, err := b.runCommand(args...)
 	if err != nil {
-		return nil, fmt.Errorf("error listing snapshots: %s: %v", stderr, err)
+		return nil, b.wrapCmdError("listing snapshots", stderr, err)
 	}
 	return snaps, nil
 }
@@ -138,12 +250,11 @@ func (b *Backup) getLatestMatchingSnapshot(source, target string) (string, error
 	}
 
 	for i := len(sourceSnaps) - 1; i >= 0; i-- {
-		at := strings.Index(sourceSnaps[i], "@")
-		if at < 0 {
+		_, snapPart := splitSnapshot(sourceSnaps[i])
+		if snapPart == "" {
 			continue
 		}
-		snappart := sourceSnaps[i][at:]
-		targetseek := fmt.Sprintf("%s%s", target, snappart)
+		targetseek := fmt.Sprintf("%s@%s", target, snapPart)
 		if slices.Contains(targetSnaps, targetseek) {
 			return sourceSnaps[i], nil
 		}
@@ -153,18 +264,9 @@ func (b *Backup) getLatestMatchingSnapshot(source, target string) (string, error
 
 func (b *Backup) snapshotExists(vol string, snapshot string) bool {
 	snapshotName := fmt.Sprintf("%s@%s", vol, snapshot)
-	var args []string
-	if strings.HasPrefix(vol, b.target+"/") {
-		args = slices.Clone(b.targetCmd)
-	} else {
-		args = slices.Clone(b.sourceCmd)
-	}
-	args = append(args, "list", "-H", "-t", "snapshot", snapshotName)
-	_, _, err := b.runCommand(true, args...)
-	if err != nil {
-		return false
-	}
-	return true
+	args := b.buildCommand(b.isTargetVolume(vol), "list", "-H", "-t", "snapshot", snapshotName)
+	_, _, err := b.runCommand(args...)
+	return err == nil
 }
 
 func (b *Backup) createSnapshot(vol string, recurse bool) (string, error) {
@@ -172,15 +274,17 @@ func (b *Backup) createSnapshot(vol string, recurse bool) (string, error) {
 	snapName := now.Format("2006-01-02T15:04:05")
 	slog.Info("creating snapshot", "vol", vol, "snapshot", snapName, "recurse", recurse)
 	snap := fmt.Sprintf("%s@%s", vol, snapName)
-	args := slices.Clone(b.sourceCmd)
-	args = append(args, "snapshot")
+
+	args := []string{"snapshot"}
 	if recurse {
 		args = append(args, "-r")
 	}
 	args = append(args, snap)
-	_, stderr, err := b.runCommand(false, args...)
+
+	cmdArgs := b.buildCommand(false, args...)
+	_, stderr, err := b.runCommand(cmdArgs...)
 	if err != nil {
-		return "", fmt.Errorf("error creating snapshot: %s: %v", stderr, err)
+		return "", b.wrapCmdError("creating snapshot", stderr, err)
 	}
 
 	return snap, nil
@@ -201,42 +305,26 @@ func pv(size int64) (*exec.Cmd, error) {
 
 func (b *Backup) runBackup(vol, startSnap, endSnap string, size int64) error {
 	slog.Info("backup starting", "vol", vol, "start", startSnap, "end", endSnap)
-	sendArgs := slices.Clone(b.sourceCmd)
-	sendArgs = append(sendArgs, "send", "-R", "-i", startSnap, endSnap)
-	receiveArgs := slices.Clone(b.targetCmd)
-	receiveArgs = append(receiveArgs, "receive", "-F", fmt.Sprintf("%s/%s", b.target, vol))
-	cmdSend := exec.Command(sendArgs[0], sendArgs[1:]...)
-	cmdReceive := exec.Command(receiveArgs[0], receiveArgs[1:]...)
-	sendOut, err := cmdSend.StdoutPipe()
+
+	sendArgs := b.buildCommand(false, "send", "-R", "-i", startSnap, endSnap)
+	receiveArgs := b.buildCommand(true, "receive", "-F", fmt.Sprintf("%s/%s", b.target, vol))
+
+	// Build middle commands (pv if available)
+	var middleCmds [][]string
+	if _, err := pv(size); err == nil {
+		pvPath, _ := exec.LookPath("pv")
+		middleCmds = append(middleCmds, []string{pvPath, "-s", strconv.FormatInt(size, 10)})
+		slog.Debug("pv started for backup")
+	}
+
+	// Build pipeline: send -> middle commands -> receive
+	allCmds := [][]string{sendArgs}
+	allCmds = append(allCmds, middleCmds...)
+	allCmds = append(allCmds, receiveArgs)
+
+	_, stderr, err := b.runPipeline(allCmds)
 	if err != nil {
-		return fmt.Errorf("error setting up pipe: %w", err)
-	}
-
-	cmdPv, err := pv(size)
-	if err == nil {
-		cmdPv.Stderr = os.Stderr
-		pvOut, err := cmdPv.StdoutPipe()
-		if err == nil {
-			cmdPv.Stdin = sendOut
-			cmdReceive.Stdin = pvOut
-			if err := cmdPv.Start(); err != nil {
-				return fmt.Errorf("error starting pv: %w", err)
-			}
-			slog.Debug("pv started for backup")
-		} else {
-			cmdReceive.Stdin = sendOut
-		}
-	} else {
-		cmdReceive.Stdin = sendOut
-	}
-
-	if err := cmdSend.Start(); err != nil {
-		return fmt.Errorf("error starting zfs send: %w", err)
-	}
-
-	output, err := cmdReceive.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("error during zfs receive: %s: %w", string(output), err)
+		return b.wrapCmdError("during backup", stderr, err)
 	}
 
 	slog.Info("backup complete", "vol", vol, "start", startSnap, "end", endSnap)
@@ -245,11 +333,10 @@ func (b *Backup) runBackup(vol, startSnap, endSnap string, size int64) error {
 
 func (b *Backup) dryrunBackup(vol, startSnap, endSnap string) (int64, error) {
 	slog.Info("performing dry run", "vol", vol, "start", startSnap, "end", endSnap)
-	sendArgs := slices.Clone(b.sourceCmd)
-	sendArgs = append(sendArgs, "send", "-n", "-P", "-R", "-i", startSnap, endSnap)
-	lines, stderr, err := b.runCommand(true, sendArgs...)
+	sendArgs := b.buildCommand(false, "send", "-n", "-P", "-R", "-i", startSnap, endSnap)
+	lines, stderr, err := b.runCommand(sendArgs...)
 	if err != nil {
-		return 0, fmt.Errorf("error with dry run: %w: %s", err, stderr)
+		return 0, b.wrapCmdError("with dry run", stderr, err)
 	}
 	var size int64
 	for _, l := range lines {
@@ -269,20 +356,16 @@ func (b *Backup) dryrunBackup(vol, startSnap, endSnap string) (int64, error) {
 }
 
 func (b *Backup) deleteSnapshot(snap string, recurse bool) error {
-	var args []string
-	if strings.HasPrefix(snap, b.target+"/") {
-		args = slices.Clone(b.targetCmd)
-	} else {
-		args = slices.Clone(b.sourceCmd)
-	}
-	args = append(args, "destroy", snap)
+	args := []string{"destroy", snap}
 	if recurse {
 		args = append(args, "-r")
 	}
+
+	cmdArgs := b.buildCommand(b.isTargetVolume(snap), args...)
 	slog.Info("deleting snapshot", "snap", snap)
-	_, stderr, err := b.runCommand(false, args...)
+	_, stderr, err := b.runCommand(cmdArgs...)
 	if err != nil {
-		return fmt.Errorf("error deleting snapshot: %w: %s", err, stderr)
+		return b.wrapCmdError("deleting snapshot", stderr, err)
 	}
 	return nil
 }
@@ -340,13 +423,20 @@ func (b *Backup) IncrementalBackup(vol string) error {
 	if err != nil {
 		return err
 	}
-	parts := strings.Split(snap, "@")
-	snapName := parts[1]
+	_, snapName := splitSnapshot(snap)
+	if snapName == "" {
+		return fmt.Errorf("invalid snapshot format: %s", snap)
+	}
 	targetVolume := fmt.Sprintf("%s/%s", b.target, vol)
 	if !b.snapshotExists(targetVolume, snapName) {
 		return fmt.Errorf("snapshot %s of volume %s not found", snapName, targetVolume)
 	}
 	slog.Info("incremental backup start", "snap", snap)
+
+	if b.dryrun {
+		slog.Info("dry run: would create new snapshot and run incremental backup", "vol", vol, "from", snap)
+		return nil
+	}
 
 	// Create new snapshot
 	newsnap, err := b.createSnapshot(vol, true)
@@ -365,7 +455,5 @@ func (b *Backup) IncrementalBackup(vol string) error {
 	}
 	// Clean up old snapshots on source
 	err = b.cleanSnapshots(vol, 2)
-	// Clean up old snapshots on target
-	// err = b.cleanSnapshots(targetVolume, 2)
-	return nil
+	return err
 }
