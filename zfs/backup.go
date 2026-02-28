@@ -303,37 +303,29 @@ func pv(size int64) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
-func (b *Backup) runBackup(vol, startSnap, endSnap string, size int64) error {
-	slog.Info("backup starting", "vol", vol, "start", startSnap, "end", endSnap)
-
-	sendArgs := b.buildCommand(false, "send", "-R", "-i", startSnap, endSnap)
-	receiveArgs := b.buildCommand(true, "receive", "-F", fmt.Sprintf("%s/%s", b.target, vol))
-
-	// Build middle commands (pv if available)
-	var middleCmds [][]string
-	if _, err := pv(size); err == nil {
-		pvPath, _ := exec.LookPath("pv")
-		middleCmds = append(middleCmds, []string{pvPath, "-s", strconv.FormatInt(size, 10)})
-		slog.Debug("pv started for backup")
-	}
-
-	// Build pipeline: send -> middle commands -> receive
-	allCmds := [][]string{sendArgs}
-	allCmds = append(allCmds, middleCmds...)
-	allCmds = append(allCmds, receiveArgs)
-
-	_, stderr, err := b.runPipeline(allCmds)
+func (b *Backup) listFilesystems(vol string) ([]string, error) {
+	args := b.buildCommand(false, "list", "-H", "-o", "name", "-r", "-t", "filesystem,volume", vol)
+	lines, stderr, err := b.runCommand(args...)
 	if err != nil {
-		return b.wrapCmdError("during backup", stderr, err)
+		return nil, b.wrapCmdError("listing filesystems", stderr, err)
 	}
-
-	slog.Info("backup complete", "vol", vol, "start", startSnap, "end", endSnap)
-	return nil
+	return lines, nil
 }
 
-func (b *Backup) dryrunBackup(vol, startSnap, endSnap string) (int64, error) {
-	slog.Info("performing dry run", "vol", vol, "start", startSnap, "end", endSnap)
-	sendArgs := b.buildCommand(false, "send", "-n", "-P", "-R", "-i", startSnap, endSnap)
+func (b *Backup) datasetExists(vol string) bool {
+	args := b.buildCommand(b.isTargetVolume(vol), "list", "-H", "-t", "filesystem,volume", vol)
+	_, _, err := b.runCommand(args...)
+	return err == nil
+}
+
+func (b *Backup) dryrunSingleBackup(startSnap, endSnap string) (int64, error) {
+	slog.Info("performing dry run", "start", startSnap, "end", endSnap)
+	var sendArgs []string
+	if startSnap != "" {
+		sendArgs = b.buildCommand(false, "send", "-n", "-P", "-i", startSnap, endSnap)
+	} else {
+		sendArgs = b.buildCommand(false, "send", "-n", "-P", endSnap)
+	}
 	lines, stderr, err := b.runCommand(sendArgs...)
 	if err != nil {
 		return 0, b.wrapCmdError("with dry run", stderr, err)
@@ -353,6 +345,37 @@ func (b *Backup) dryrunBackup(vol, startSnap, endSnap string) (int64, error) {
 		return 0, fmt.Errorf("backup size 0")
 	}
 	return size, nil
+}
+
+func (b *Backup) runSingleBackup(fs, startSnap, endSnap string, size int64) error {
+	slog.Info("backup starting", "fs", fs, "start", startSnap, "end", endSnap)
+
+	var sendArgs []string
+	if startSnap != "" {
+		sendArgs = b.buildCommand(false, "send", "-i", startSnap, endSnap)
+	} else {
+		sendArgs = b.buildCommand(false, "send", endSnap)
+	}
+	receiveArgs := b.buildCommand(true, "receive", "-F", fmt.Sprintf("%s/%s", b.target, fs))
+
+	var middleCmds [][]string
+	if _, err := pv(size); err == nil {
+		pvPath, _ := exec.LookPath("pv")
+		middleCmds = append(middleCmds, []string{pvPath, "-s", strconv.FormatInt(size, 10)})
+		slog.Debug("pv started for backup")
+	}
+
+	allCmds := [][]string{sendArgs}
+	allCmds = append(allCmds, middleCmds...)
+	allCmds = append(allCmds, receiveArgs)
+
+	_, stderr, err := b.runPipeline(allCmds)
+	if err != nil {
+		return b.wrapCmdError("during backup", stderr, err)
+	}
+
+	slog.Info("backup complete", "fs", fs, "start", startSnap, "end", endSnap)
+	return nil
 }
 
 func (b *Backup) deleteSnapshot(snap string, recurse bool) error {
@@ -419,41 +442,54 @@ func (b *Backup) cleanSnapshots(vol string, retain int) error {
 }
 
 func (b *Backup) IncrementalBackup(vol string) error {
-	snap, err := b.getLatestMatchingSnapshot(vol, fmt.Sprintf("%s/%s", b.target, vol))
-	if err != nil {
-		return err
-	}
-	_, snapName := splitSnapshot(snap)
-	if snapName == "" {
-		return fmt.Errorf("invalid snapshot format: %s", snap)
-	}
-	targetVolume := fmt.Sprintf("%s/%s", b.target, vol)
-	if !b.snapshotExists(targetVolume, snapName) {
-		return fmt.Errorf("snapshot %s of volume %s not found", snapName, targetVolume)
-	}
-	slog.Info("incremental backup start", "snap", snap)
-
 	if b.dryrun {
-		slog.Info("dry run: would create new snapshot and run incremental backup", "vol", vol, "from", snap)
+		slog.Info("dry run: would create new snapshot and run recursive backup", "vol", vol)
 		return nil
 	}
 
-	// Create new snapshot
+	// Create new snapshot on vol and all descendants atomically
 	newsnap, err := b.createSnapshot(vol, true)
 	if err != nil {
 		return err
 	}
-	size, err := b.dryrunBackup(vol, snap, newsnap)
+	_, snapName := splitSnapshot(newsnap)
+	if snapName == "" {
+		return fmt.Errorf("invalid snapshot format: %s", newsnap)
+	}
+
+	// List all filesystems under vol (including vol itself)
+	filesystems, err := b.listFilesystems(vol)
 	if err != nil {
 		return err
 	}
-	slog.Info("estimated backup size", "size", size, "human_size", util.HumanBytes(size))
-	// Run backup
-	err = b.runBackup(vol, snap, newsnap, size)
-	if err != nil {
-		return err
+
+	// Back up each filesystem independently
+	for _, fs := range filesystems {
+		fsSnap := fmt.Sprintf("%s@%s", fs, snapName)
+		targetVol := fmt.Sprintf("%s/%s", b.target, fs)
+
+		var startSnap string
+		if b.datasetExists(targetVol) {
+			startSnap, err = b.getLatestMatchingSnapshot(fs, targetVol)
+			if err != nil {
+				slog.Warn("no matching snapshot found, performing full backup", "fs", fs, "err", err)
+				startSnap = ""
+			}
+		} else {
+			slog.Info("target does not exist, performing full backup", "fs", fs)
+		}
+
+		size, err := b.dryrunSingleBackup(startSnap, fsSnap)
+		if err != nil {
+			return err
+		}
+		slog.Info("estimated backup size", "fs", fs, "size", size, "human_size", util.HumanBytes(size))
+
+		if err := b.runSingleBackup(fs, startSnap, fsSnap, size); err != nil {
+			return err
+		}
 	}
-	// Clean up old snapshots on source
-	err = b.cleanSnapshots(vol, 2)
-	return err
+
+	// Clean up old snapshots; recursive delete covers all descendant datasets
+	return b.cleanSnapshots(vol, 2)
 }
