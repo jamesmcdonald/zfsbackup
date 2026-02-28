@@ -11,14 +11,13 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "zfsbackup <source-fs>",
+	Use:   "zfsbackup [flags] <source> [<source>...]",
 	Short: "Back up ZFS filesystems",
 	Long:  `Back up ZFS filesystems incrementally to target ZFS filesystems.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			return fmt.Errorf("no source filesystems provided")
 		}
-		sourcefs := args[0]
 		targetfs, _ := cmd.Flags().GetString("target-fs")
 		dryrun, _ := cmd.Flags().GetBool("dry-run")
 		debug, _ := cmd.Flags().GetBool("debug")
@@ -26,14 +25,26 @@ var rootCmd = &cobra.Command{
 		targetCmdStr, _ := cmd.Flags().GetString("target-command")
 		sourceCmd := strings.Fields(sourceCmdStr)
 		targetCmd := strings.Fields(targetCmdStr)
+
 		if debug {
 			slog.SetLogLoggerLevel(slog.LevelDebug)
 		}
-		fmt.Printf("Backing up %s to %s\n", sourcefs, targetfs)
-		var opts []zfs.BackupOption
-		if debug {
-			opts = append(opts, zfs.WithDebugOption())
+
+		var sources []zfs.Source
+		for _, arg := range args {
+			src, err := zfs.ParseSource(arg)
+			if err != nil {
+				return fmt.Errorf("invalid source %q: %w", arg, err)
+			}
+			sources = append(sources, src)
 		}
+
+		fmt.Printf("Backing up to %s:\n", targetfs)
+		for _, src := range sources {
+			fmt.Printf("  %s\n", src)
+		}
+
+		var opts []zfs.BackupOption
 		if dryrun {
 			opts = append(opts, zfs.WithDryRunOption())
 		}
@@ -43,12 +54,12 @@ var rootCmd = &cobra.Command{
 		if len(targetCmd) > 0 {
 			opts = append(opts, zfs.WithTargetCommandOption(targetCmd))
 		}
+
 		b, err := zfs.NewBackup(targetfs, opts...)
 		if err != nil {
 			return err
 		}
-		err = b.IncrementalBackup(sourcefs)
-		return err
+		return b.RunBackup(sources)
 	},
 }
 
