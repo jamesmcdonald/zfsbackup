@@ -26,9 +26,15 @@ var rootCmd = &cobra.Command{
 		sourceCmd := strings.Fields(sourceCmdStr)
 		targetCmd := strings.Fields(targetCmdStr)
 
+		level := slog.LevelInfo
 		if debug {
-			slog.SetLogLoggerLevel(slog.LevelDebug)
+			level = slog.LevelDebug
 		}
+
+		handler := slog.NewTextHandler(cmd.ErrOrStderr(), &slog.HandlerOptions{
+			Level: level,
+		})
+		logger := slog.New(handler)
 
 		var sources []zfs.Source
 		for _, arg := range args {
@@ -45,6 +51,7 @@ var rootCmd = &cobra.Command{
 		}
 
 		var opts []zfs.BackupOption
+		opts = append(opts, zfs.WithLogger(logger))
 		if dryrun {
 			opts = append(opts, zfs.WithDryRunOption())
 		}

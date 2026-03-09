@@ -43,6 +43,7 @@ type Backup struct {
 	dryrun    bool
 	sourceCmd []string
 	targetCmd []string
+	logger    *slog.Logger
 }
 
 type BackupOption func(*Backup) error
@@ -68,6 +69,13 @@ func WithTargetCommandOption(cmd []string) BackupOption {
 	}
 }
 
+func WithLogger(logger *slog.Logger) BackupOption {
+	return func(b *Backup) error {
+		b.logger = logger
+		return nil
+	}
+}
+
 func NewBackup(target string, opts ...BackupOption) (*Backup, error) {
 	if target == "" {
 		return nil, fmt.Errorf("target filesystem cannot be empty")
@@ -76,6 +84,7 @@ func NewBackup(target string, opts ...BackupOption) (*Backup, error) {
 		target:    target,
 		sourceCmd: []string{"zfs"},
 		targetCmd: []string{"zfs"},
+		logger:    slog.Default(),
 	}
 	for _, opt := range opts {
 		if err := opt(b); err != nil {
@@ -217,7 +226,7 @@ func (b *Backup) query(args ...string) ([]string, string, error) {
 // run executes a write command. Skipped in dry-run mode.
 func (b *Backup) run(args ...string) ([]string, string, error) {
 	if b.dryrun {
-		slog.Info("dry run: skip", "args", args)
+		b.logger.Info("dry run: skip", "args", args)
 		return nil, "", nil
 	}
 	return b.execCmd(args)
@@ -226,7 +235,7 @@ func (b *Backup) run(args ...string) ([]string, string, error) {
 // pipeline executes a write pipeline. Skipped in dry-run mode.
 func (b *Backup) pipeline(cmds [][]string) ([]string, string, error) {
 	if b.dryrun {
-		slog.Info("dry run: skip", "cmds", cmds)
+		b.logger.Info("dry run: skip", "cmds", cmds)
 		return nil, "", nil
 	}
 	return b.execPipeline(cmds)
@@ -283,11 +292,11 @@ func (b *Backup) datasetExists(vol string) bool {
 func (b *Backup) createSnapshot(vol string, recurse bool) (string, error) {
 	snapName := time.Now().Format("2006-01-02T15:04:05")
 	if b.dryrun {
-		slog.Info("dry run: would create snapshot", "snapshot", snapName, "vol", vol, "recurse", recurse)
+		b.logger.Info("dry run: would create snapshot", "snapshot", snapName, "vol", vol, "recurse", recurse)
 		return snapName, nil
 	}
 
-	slog.Info("creating snapshot", "vol", vol, "snapshot", snapName, "recurse", recurse)
+	b.logger.Info("creating snapshot", "vol", vol, "snapshot", snapName, "recurse", recurse)
 	snap := fmt.Sprintf("%s@%s", vol, snapName)
 	args := []string{"snapshot"}
 	if recurse {
@@ -333,7 +342,7 @@ func (b *Backup) dryrunSingleBackup(startSnap, endSnap string) (int64, error) {
 }
 
 func (b *Backup) runSingleBackup(fs, startSnap, endSnap string, size int64) error {
-	slog.Info("backup starting", "fs", fs, "start", startSnap, "end", endSnap)
+	b.logger.Info("backup starting", "fs", fs, "start", startSnap, "end", endSnap)
 
 	var sendArgs []string
 	if startSnap != "" {
@@ -347,7 +356,7 @@ func (b *Backup) runSingleBackup(fs, startSnap, endSnap string, size int64) erro
 	pvPath, pvErr := exec.LookPath("pv")
 	if pvErr == nil && size > 0 {
 		allCmds = append(allCmds, []string{pvPath, "-s", strconv.FormatInt(size, 10)})
-		slog.Debug("using pv for progress", "size", size)
+		b.logger.Debug("using pv for progress", "size", size)
 	}
 	allCmds = append(allCmds, receiveArgs)
 
@@ -356,7 +365,7 @@ func (b *Backup) runSingleBackup(fs, startSnap, endSnap string, size int64) erro
 		return b.wrapCmdError("during backup", stderr, err)
 	}
 
-	slog.Info("backup complete", "fs", fs, "start", startSnap, "end", endSnap)
+	b.logger.Info("backup complete", "fs", fs, "start", startSnap, "end", endSnap)
 	return nil
 }
 
@@ -368,7 +377,7 @@ func (b *Backup) deleteSnapshot(snap string, recurse bool) error {
 	args = append(args, snap)
 
 	cmdArgs := b.buildCommand(b.isTargetVolume(snap), args...)
-	slog.Info("deleting snapshot", "snap", snap)
+	b.logger.Info("deleting snapshot", "snap", snap)
 	_, stderr, err := b.run(cmdArgs...)
 	if err != nil {
 		return b.wrapCmdError("deleting snapshot", stderr, err)
@@ -391,24 +400,24 @@ func (b *Backup) cleanSnapshots(vol string, retain int, recurse bool) error {
 	if err != nil {
 		return err
 	}
-	slog.Info("cleaning snapshots", "vol", vol, "retain", retain, "snaps", len(snaps))
+	b.logger.Info("cleaning snapshots", "vol", vol, "retain", retain, "snaps", len(snaps))
 	if retain < 1 {
-		slog.Warn("retain too low, retaining 1 snap", "retain", retain)
+		b.logger.Warn("retain too low, retaining 1 snap", "retain", retain)
 		retain = 1
 	}
 	if len(snaps) <= retain {
-		slog.Debug("not cleaning snaps", "snaps", len(snaps), "retain", retain)
+		b.logger.Debug("not cleaning snaps", "snaps", len(snaps), "retain", retain)
 		return nil
 	}
 	saved := 0
 	for i := len(snaps) - 1; i >= 0; i-- {
 		snap := snaps[i]
 		if !isBackupSnapshot(snap) {
-			slog.Debug("skipping non-backup snapshot", "snap", snap)
+			b.logger.Debug("skipping non-backup snapshot", "snap", snap)
 			continue
 		}
 		if saved < retain {
-			slog.Debug("retaining snapshot", "snap", snap)
+			b.logger.Debug("retaining snapshot", "snap", snap)
 			saved++
 			continue
 		}
@@ -428,10 +437,10 @@ func (b *Backup) backupFilesystem(fs, snapName string) error {
 		var err error
 		startSnap, err = b.getLatestMatchingSnapshot(fs, targetVol)
 		if err != nil {
-			slog.Warn("no matching snapshot found, performing full backup", "fs", fs, "err", err)
+			b.logger.Warn("no matching snapshot found, performing full backup", "fs", fs, "err", err)
 		}
 	} else {
-		slog.Info("target does not exist, performing full backup", "fs", fs)
+		b.logger.Info("target does not exist, performing full backup", "fs", fs)
 	}
 
 	size, err := b.dryrunSingleBackup(startSnap, fsSnap)
@@ -440,9 +449,9 @@ func (b *Backup) backupFilesystem(fs, snapName string) error {
 			// The new snapshot doesn't exist yet in dry-run, so estimation may fail.
 			// Log intent without size.
 			if startSnap != "" {
-				slog.Info("dry run: would send incremental", "fs", fs, "from", startSnap, "to", fsSnap)
+				b.logger.Info("dry run: would send incremental", "fs", fs, "from", startSnap, "to", fsSnap)
 			} else {
-				slog.Info("dry run: would send full", "fs", fs, "to", targetVol)
+				b.logger.Info("dry run: would send full", "fs", fs, "to", targetVol)
 			}
 			return nil
 		}
@@ -451,14 +460,14 @@ func (b *Backup) backupFilesystem(fs, snapName string) error {
 
 	if b.dryrun {
 		if startSnap != "" {
-			slog.Info("dry run: would send incremental", "fs", fs, "from", startSnap, "to", fsSnap, "size", util.HumanBytes(size))
+			b.logger.Info("dry run: would send incremental", "fs", fs, "from", startSnap, "to", fsSnap, "size", util.HumanBytes(size))
 		} else {
-			slog.Info("dry run: would send full", "fs", fs, "to", targetVol, "size", util.HumanBytes(size))
+			b.logger.Info("dry run: would send full", "fs", fs, "to", targetVol, "size", util.HumanBytes(size))
 		}
 		return nil
 	}
 
-	slog.Info("estimated backup size", "fs", fs, "size", size, "human_size", util.HumanBytes(size))
+	b.logger.Info("estimated backup size", "fs", fs, "size", size, "human_size", util.HumanBytes(size))
 	return b.runSingleBackup(fs, startSnap, fsSnap, size)
 }
 
