@@ -1,4 +1,4 @@
-package util
+package zfs
 
 import "fmt"
 

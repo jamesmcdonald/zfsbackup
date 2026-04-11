@@ -10,8 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/jamesmcdonald/zfsbackup/util"
 )
 
 type Source struct {
@@ -460,14 +458,14 @@ func (b *Backup) backupFilesystem(fs, snapName string) error {
 
 	if b.dryrun {
 		if startSnap != "" {
-			b.logger.Info("dry run: would send incremental", "fs", fs, "from", startSnap, "to", fsSnap, "size", util.HumanBytes(size))
+			b.logger.Info("dry run: would send incremental", "fs", fs, "from", startSnap, "to", fsSnap, "size", HumanBytes(size))
 		} else {
-			b.logger.Info("dry run: would send full", "fs", fs, "to", targetVol, "size", util.HumanBytes(size))
+			b.logger.Info("dry run: would send full", "fs", fs, "to", targetVol, "size", HumanBytes(size))
 		}
 		return nil
 	}
 
-	b.logger.Info("estimated backup size", "fs", fs, "size", size, "human_size", util.HumanBytes(size))
+	b.logger.Info("estimated backup size", "fs", fs, "size", size, "human_size", HumanBytes(size))
 	return b.runSingleBackup(fs, startSnap, fsSnap, size)
 }
 
