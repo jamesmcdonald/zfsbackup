@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"runtime"
 	"strings"
 
 	"golang.org/x/term"
@@ -25,6 +26,7 @@ var rootCmd = &cobra.Command{
 		targetfs, _ := cmd.Flags().GetString("target-fs")
 		dryrun, _ := cmd.Flags().GetBool("dry-run")
 		debug, _ := cmd.Flags().GetBool("debug")
+		workers, _ := cmd.Flags().GetInt("workers")
 		sourceCmdStr, _ := cmd.Flags().GetString("source-command")
 		targetCmdStr, _ := cmd.Flags().GetString("target-command")
 		sourceCmd := strings.Fields(sourceCmdStr)
@@ -56,6 +58,9 @@ var rootCmd = &cobra.Command{
 
 		if dryrun {
 			opts = append(opts, zfs.WithDryRunOption())
+		}
+		if workers > 0 {
+			opts = append(opts, zfs.WithWorkers(workers))
 		}
 		if len(sourceCmd) > 0 {
 			opts = append(opts, zfs.WithSourceCommandOption(sourceCmd))
@@ -101,6 +106,7 @@ func init() {
 	rootCmd.Flags().StringP("target-fs", "t", "backup", "Target filesystem")
 	rootCmd.Flags().BoolP("dry-run", "n", false, "Perform a trial run with no changes made")
 	rootCmd.Flags().BoolP("debug", "d", false, "Enable debug output")
+	rootCmd.Flags().IntP("workers", "w", 0, fmt.Sprintf("Number of parallel backup workers (default: 2 * CPU cores = %d)", runtime.NumCPU()*2))
 	rootCmd.Flags().StringP("source-command", "S", "zfs", "Source ZFS command")
 	rootCmd.Flags().StringP("target-command", "T", "zfs", "Target ZFS command")
 }

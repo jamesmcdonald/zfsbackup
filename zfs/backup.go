@@ -6,9 +6,11 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -53,6 +55,7 @@ type Backup struct {
 	targetCmd       []string
 	logger          *slog.Logger
 	progressFactory ProgressFactory
+	workers         int
 }
 
 type BackupOption func(*Backup) error
@@ -92,6 +95,15 @@ func WithProgressFactory(f ProgressFactory) BackupOption {
 	}
 }
 
+func WithWorkers(n int) BackupOption {
+	return func(b *Backup) error {
+		if n > 0 {
+			b.workers = n
+		}
+		return nil
+	}
+}
+
 func NewBackup(target string, opts ...BackupOption) (*Backup, error) {
 	if target == "" {
 		return nil, fmt.Errorf("target filesystem cannot be empty")
@@ -101,6 +113,7 @@ func NewBackup(target string, opts ...BackupOption) (*Backup, error) {
 		sourceCmd: []string{"zfs"},
 		targetCmd: []string{"zfs"},
 		logger:    slog.Default(),
+		workers:   runtime.NumCPU() * 2,
 	}
 	for _, opt := range opts {
 		if err := opt(b); err != nil {
@@ -527,35 +540,86 @@ func (b *Backup) backupFilesystem(fs, snapName string) error {
 	return b.runSingleBackup(fs, startSnap, fsSnap, size)
 }
 
-func (b *Backup) backupSource(src Source) error {
-	snapName, err := b.createSnapshot(src.vol, src.recurse)
-	if err != nil {
-		return err
+// RunBackup backs up all sources using a worker pool for parallel filesystem transfers.
+// Phase 1 (sequential): create snapshots and enumerate filesystems for all sources.
+// Phase 2 (parallel):   back up all individual filesystems via b.workers goroutines.
+// Phase 3 (sequential): clean old snapshots for all sources.
+func (b *Backup) RunBackup(sources []Source) error {
+	type sourceState struct {
+		src         Source
+		snapName    string
+		filesystems []string
 	}
 
-	var filesystems []string
-	if src.recurse {
-		filesystems, err = b.listFilesystems(src.vol)
+	// Phase 1: snapshots + filesystem enumeration
+	states := make([]sourceState, 0, len(sources))
+	for _, src := range sources {
+		snapName, err := b.createSnapshot(src.vol, src.recurse)
 		if err != nil {
 			return err
 		}
-	} else {
-		filesystems = []string{src.vol}
+		var filesystems []string
+		if src.recurse {
+			filesystems, err = b.listFilesystems(src.vol)
+			if err != nil {
+				return err
+			}
+		} else {
+			filesystems = []string{src.vol}
+		}
+		states = append(states, sourceState{src, snapName, filesystems})
 	}
 
-	for _, fs := range filesystems {
-		if err := b.backupFilesystem(fs, snapName); err != nil {
-			return err
+	// Phase 2: parallel backup
+	type task struct{ fs, snapName string }
+	var tasks []task
+	for _, s := range states {
+		for _, fs := range s.filesystems {
+			tasks = append(tasks, task{fs, s.snapName})
 		}
 	}
 
-	return b.cleanSnapshots(src.vol, 2, src.recurse)
-}
+	taskCh := make(chan task, len(tasks))
+	for _, t := range tasks {
+		taskCh <- t
+	}
+	close(taskCh)
 
-// RunBackup backs up each source in order, failing fast on any error.
-func (b *Backup) RunBackup(sources []Source) error {
-	for _, src := range sources {
-		if err := b.backupSource(src); err != nil {
+	var (
+		mu       sync.Mutex
+		firstErr error
+	)
+	var wg sync.WaitGroup
+	for range b.workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for t := range taskCh {
+				mu.Lock()
+				stopped := firstErr != nil
+				mu.Unlock()
+				if stopped {
+					return
+				}
+				if err := b.backupFilesystem(t.fs, t.snapName); err != nil {
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					mu.Unlock()
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	if firstErr != nil {
+		return firstErr
+	}
+
+	// Phase 3: clean snapshots
+	for _, s := range states {
+		if err := b.cleanSnapshots(s.src.vol, 2, s.src.recurse); err != nil {
 			return err
 		}
 	}
