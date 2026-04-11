@@ -83,7 +83,17 @@ func (b *Bar) rate() float64 {
 	return float64(b.samples[newest].n-b.samples[oldest].n) / dt
 }
 
-func (b *Bar) draw(output *os.File, width int) {
+func (b *Bar) eta() string {
+	pos := b.pos.Load()
+	r := b.rate()
+	if r <= 0 || pos >= b.target {
+		return "--:--:--"
+	}
+	secs := int(float64(b.target-pos) / r)
+	return fmt.Sprintf("%02d:%02d:%02d", secs/3600, (secs%3600)/60, secs%60)
+}
+
+func (b *Bar) draw(output *os.File, width, labelWidth int) {
 	pos := b.pos.Load()
 	b.recordSample(pos)
 
@@ -91,13 +101,11 @@ func (b *Bar) draw(output *os.File, width int) {
 
 	sizeText := zfs.HumanBytesFraction(pos, b.target)
 	rateText := zfs.HumanBytesRate(b.rate())
+	etaText := b.eta()
 
-	// 20 (label) + 2 ( [) + 2 (] ) + 4 (pct) + 2 (  ) + sizeText + 2 (  ) + 12 (rateText fixed)
-	overhead := 20 + 2 + 2 + 4 + 2 + len(sizeText) + 2 + 12
+	// labelWidth + 2 ([) + 2 (]) + 8 (eta) + 2 (  ) + 4 (pct) + 2 (  ) + sizeText + 2 (  ) + 12 (rateText fixed)
+	overhead := labelWidth + 2 + 2 + 8 + 2 + 4 + 2 + len(sizeText) + 2 + 12
 	barWidth := max(width-overhead, 5)
-
-	// bar contents
-	// label [1 space] [10 size (xxxx.y mib)] [1 space] [11 speed (xx.yy kib/s) or (xxxx kib/s)] [1 space] [0 or more bar + space] [4 pct]
 
 	filled := int(pct * float64(barWidth))
 	fillChar := "="
@@ -106,11 +114,11 @@ func (b *Bar) draw(output *os.File, width int) {
 		fillChar = ">"
 	}
 
-	dl := b.displayLabel(20)
+	dl := b.displayLabel(labelWidth)
 	pctText := "Done"
 	if !b.done.Load() {
 		pctText = fmt.Sprintf("%3.0f%%", pct*100)
 	}
 	// Kill to EOL after printing
-	fmt.Fprintf(output, "%20s [%-*s] %s  %s  %s\033[0K\n", dl, barWidth, strings.Repeat(fillChar, filled), pctText, sizeText, rateText)
+	fmt.Fprintf(output, "%*s [%-*s] %s  %s  %s  %s\033[0K\n", labelWidth, dl, barWidth, strings.Repeat(fillChar, filled), etaText, pctText, sizeText, rateText)
 }

@@ -54,6 +54,24 @@ func termWidth(t *os.File) int {
 	return width
 }
 
+func (r *Renderer) labelWidth(completed []*Bar) int {
+	w := 0
+	for _, bar := range completed {
+		if len(bar.label) > w {
+			w = len(bar.label)
+		}
+	}
+	for _, bar := range r.bars {
+		if len(bar.label) > w {
+			w = len(bar.label)
+		}
+	}
+	if w < 10 {
+		w = 10
+	}
+	return w
+}
+
 func (r *Renderer) draw(rewind int, completed []*Bar) {
 	// Move back up rewind lines
 	if rewind > 0 {
@@ -70,11 +88,12 @@ func (r *Renderer) draw(rewind int, completed []*Bar) {
 		fmt.Fprintf(r.output, "%s\033[0K\n", log)
 	}
 
+	lw := r.labelWidth(completed)
 	for _, bar := range completed {
-		bar.draw(r.output, r.width)
+		bar.draw(r.output, r.width, lw)
 	}
 	for _, bar := range r.bars {
-		bar.draw(r.output, r.width)
+		bar.draw(r.output, r.width, lw)
 	}
 }
 

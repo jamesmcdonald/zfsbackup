@@ -39,12 +39,13 @@ func HumanBytes(size int64) string {
 }
 
 // HumanBytesFraction formats pos and total as "x/y UUU" using the unit of total.
+// pos is left-padded to the same digit width as total so the string length is constant.
 func HumanBytesFraction(pos, total int64) string {
 	div, suffix := unitFor(total)
-	if div == 1 {
-		return fmt.Sprintf("%d/%d %s", pos, total, suffix)
-	}
-	return fmt.Sprintf("%d/%d %s", pos/div, total/div, suffix)
+	totalNum := total / div
+	posNum := pos / div
+	width := len(fmt.Sprintf("%d", totalNum))
+	return fmt.Sprintf("%*d/%d %s", width, posNum, totalNum, suffix)
 }
 
 // HumanBytesRate formats a bytes/sec rate as a fixed-width "nnn.nn UUU/s" string.
