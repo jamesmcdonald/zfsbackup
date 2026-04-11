@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 )
 
 type Renderer struct {
+	mu         sync.Mutex
 	bars       []*Bar
 	delay      time.Duration
 	sigwinch   chan os.Signal
@@ -38,6 +40,8 @@ func (r *Renderer) LogHandler() slog.Handler {
 }
 
 func (r *Renderer) AddBar(b *Bar) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.bars = append(r.bars, b)
 }
 
@@ -52,7 +56,9 @@ func termWidth(t *os.File) int {
 
 func (r *Renderer) draw(rewind int, completed []*Bar) {
 	// Move back up rewind lines
-	fmt.Fprintf(r.output, "\033[%dA", rewind)
+	if rewind > 0 {
+		fmt.Fprintf(r.output, "\033[%dA", rewind)
+	}
 
 	// Handle logs
 	r.logHandler.(*LogHandler).mu.Lock()
@@ -88,6 +94,7 @@ func (r *Renderer) Run(ctx context.Context) {
 		}
 		var completed []*Bar
 		var active []*Bar
+		r.mu.Lock()
 		for _, bar := range r.bars {
 			if bar.done.Load() {
 				completed = append(completed, bar)
@@ -96,6 +103,7 @@ func (r *Renderer) Run(ctx context.Context) {
 			}
 		}
 		r.bars = active
+		r.mu.Unlock()
 		r.draw(rewind, completed)
 		rewind = len(r.bars)
 	}
