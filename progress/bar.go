@@ -96,6 +96,9 @@ func (b *Bar) draw(output *os.File, width int) {
 	overhead := 20 + 2 + 2 + 4 + 2 + len(sizeText) + 2 + 12
 	barWidth := max(width-overhead, 5)
 
+	// bar contents
+	// label [1 space] [10 size (xxxx.y mib)] [1 space] [11 speed (xx.yy kib/s) or (xxxx kib/s)] [1 space] [0 or more bar + space] [4 pct]
+
 	filled := int(pct * float64(barWidth))
 	fillChar := "="
 	if filled > barWidth {

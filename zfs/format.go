@@ -26,14 +26,14 @@ func unitFor(size int64) (int64, string) {
 	case size >= kB:
 		return kB, "kiB"
 	default:
-		return 1, "B"
+		return 1, "  B"
 	}
 }
 
 func HumanBytes(size int64) string {
 	div, suffix := unitFor(size)
 	if div == 1 {
-		return fmt.Sprintf("%d B", size)
+		return fmt.Sprintf("%d %s", size, suffix)
 	}
 	return fmt.Sprintf("%d %s", size/div, suffix)
 }
@@ -42,7 +42,7 @@ func HumanBytes(size int64) string {
 func HumanBytesFraction(pos, total int64) string {
 	div, suffix := unitFor(total)
 	if div == 1 {
-		return fmt.Sprintf("%d/%d B", pos, total)
+		return fmt.Sprintf("%d/%d %s", pos, total, suffix)
 	}
 	return fmt.Sprintf("%d/%d %s", pos/div, total/div, suffix)
 }
