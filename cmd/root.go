@@ -1,11 +1,15 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
 	"strings"
 
+	"golang.org/x/term"
+
+	"github.com/jamesmcdonald/zfsbackup/progress"
 	"github.com/jamesmcdonald/zfsbackup/zfs"
 	"github.com/spf13/cobra"
 )
@@ -31,10 +35,34 @@ var rootCmd = &cobra.Command{
 			level = slog.LevelDebug
 		}
 
-		handler := slog.NewTextHandler(cmd.ErrOrStderr(), &slog.HandlerOptions{
-			Level: level,
-		})
-		logger := slog.New(handler)
+		var opts []zfs.BackupOption
+		var cancelRenderer context.CancelFunc
+
+		if term.IsTerminal(int(os.Stderr.Fd())) {
+			r := progress.NewRenderer(level)
+			ctx, cancel := context.WithCancel(context.Background())
+			cancelRenderer = cancel
+			go r.Run(ctx)
+			opts = append(opts, zfs.WithLogger(slog.New(r.LogHandler())))
+			opts = append(opts, zfs.WithProgressFactory(func(label string, size int64) zfs.Progresser {
+				bar := progress.NewBar(label, size)
+				r.AddBar(bar)
+				return bar
+			}))
+		} else {
+			handler := slog.NewTextHandler(cmd.ErrOrStderr(), &slog.HandlerOptions{Level: level})
+			opts = append(opts, zfs.WithLogger(slog.New(handler)))
+		}
+
+		if dryrun {
+			opts = append(opts, zfs.WithDryRunOption())
+		}
+		if len(sourceCmd) > 0 {
+			opts = append(opts, zfs.WithSourceCommandOption(sourceCmd))
+		}
+		if len(targetCmd) > 0 {
+			opts = append(opts, zfs.WithTargetCommandOption(targetCmd))
+		}
 
 		var sources []zfs.Source
 		for _, arg := range args {
@@ -50,23 +78,15 @@ var rootCmd = &cobra.Command{
 			fmt.Printf("  %s\n", src)
 		}
 
-		var opts []zfs.BackupOption
-		opts = append(opts, zfs.WithLogger(logger))
-		if dryrun {
-			opts = append(opts, zfs.WithDryRunOption())
-		}
-		if len(sourceCmd) > 0 {
-			opts = append(opts, zfs.WithSourceCommandOption(sourceCmd))
-		}
-		if len(targetCmd) > 0 {
-			opts = append(opts, zfs.WithTargetCommandOption(targetCmd))
-		}
-
 		b, err := zfs.NewBackup(targetfs, opts...)
 		if err != nil {
 			return err
 		}
-		return b.RunBackup(sources)
+		runErr := b.RunBackup(sources)
+		if cancelRenderer != nil {
+			cancelRenderer()
+		}
+		return runErr
 	},
 }
 

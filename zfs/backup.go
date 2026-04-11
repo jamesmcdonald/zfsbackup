@@ -3,8 +3,8 @@ package zfs
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"log/slog"
-	"os"
 	"os/exec"
 	"slices"
 	"strconv"
@@ -36,12 +36,23 @@ func ParseSource(s string) (Source, error) {
 	return Source{vol: vol, recurse: recurse}, nil
 }
 
+// Progresser reports transfer progress for a single backup stream.
+type Progresser interface {
+	Add(int64)
+	Done()
+}
+
+// ProgressFactory creates a Progresser for a given filesystem transfer.
+// label is the filesystem name; size is the estimated byte count.
+type ProgressFactory func(label string, size int64) Progresser
+
 type Backup struct {
-	target    string
-	dryrun    bool
-	sourceCmd []string
-	targetCmd []string
-	logger    *slog.Logger
+	target          string
+	dryrun          bool
+	sourceCmd       []string
+	targetCmd       []string
+	logger          *slog.Logger
+	progressFactory ProgressFactory
 }
 
 type BackupOption func(*Backup) error
@@ -70,6 +81,13 @@ func WithTargetCommandOption(cmd []string) BackupOption {
 func WithLogger(logger *slog.Logger) BackupOption {
 	return func(b *Backup) error {
 		b.logger = logger
+		return nil
+	}
+}
+
+func WithProgressFactory(f ProgressFactory) BackupOption {
+	return func(b *Backup) error {
+		b.progressFactory = f
 		return nil
 	}
 }
@@ -153,6 +171,19 @@ func (b *Backup) execCmd(args []string) ([]string, string, error) {
 	return stdoutLines, stderrStr, err
 }
 
+type countingReader struct {
+	r io.Reader
+	p Progresser
+}
+
+func (cr *countingReader) Read(p []byte) (int, error) {
+	n, err := cr.r.Read(p)
+	if n > 0 {
+		cr.p.Add(int64(n))
+	}
+	return n, err
+}
+
 // execPipeline always executes a pipeline of commands, regardless of dry-run mode.
 func (b *Backup) execPipeline(allCmds [][]string) ([]string, string, error) {
 	if len(allCmds) < 2 {
@@ -173,13 +204,6 @@ func (b *Backup) execPipeline(allCmds [][]string) ([]string, string, error) {
 			return nil, "", fmt.Errorf("error setting up pipe: %w", err)
 		}
 		cmds[i+1].Stdin = stdout
-	}
-
-	// Route pv stderr to the terminal so progress is visible.
-	for i, cmd := range cmds {
-		if i > 0 && i < len(cmds)-1 && len(cmd.Args) > 0 && strings.HasSuffix(cmd.Args[0], "pv") {
-			cmd.Stderr = os.Stderr
-		}
 	}
 
 	var stdoutBuf, stderrBuf bytes.Buffer
@@ -339,6 +363,41 @@ func (b *Backup) dryrunSingleBackup(startSnap, endSnap string) (int64, error) {
 	return size, nil
 }
 
+func (b *Backup) runPipelineWithProgress(sendArgs, receiveArgs []string, p Progresser) error {
+	sendCmd := exec.Command(sendArgs[0], sendArgs[1:]...)
+	recvCmd := exec.Command(receiveArgs[0], receiveArgs[1:]...)
+
+	sendOut, err := sendCmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("error setting up pipe: %w", err)
+	}
+	recvCmd.Stdin = &countingReader{r: sendOut, p: p}
+
+	var stderrBuf bytes.Buffer
+	recvCmd.Stderr = &stderrBuf
+
+	if err := sendCmd.Start(); err != nil {
+		return fmt.Errorf("error starting send: %w", err)
+	}
+	if err := recvCmd.Start(); err != nil {
+		return fmt.Errorf("error starting receive: %w", err)
+	}
+
+	var errs []error
+	if err := sendCmd.Wait(); err != nil {
+		errs = append(errs, fmt.Errorf("send failed: %w", err))
+	}
+	if err := recvCmd.Wait(); err != nil {
+		errs = append(errs, fmt.Errorf("receive failed: %w", err))
+	}
+	p.Done()
+
+	if len(errs) > 0 {
+		return b.wrapCmdError("during backup", strings.TrimSpace(stderrBuf.String()), errs[0])
+	}
+	return nil
+}
+
 func (b *Backup) runSingleBackup(fs, startSnap, endSnap string, size int64) error {
 	b.logger.Info("backup starting", "fs", fs, "start", startSnap, "end", endSnap)
 
@@ -350,17 +409,16 @@ func (b *Backup) runSingleBackup(fs, startSnap, endSnap string, size int64) erro
 	}
 	receiveArgs := b.buildCommand(true, "receive", "-F", fmt.Sprintf("%s/%s", b.target, fs))
 
-	allCmds := [][]string{sendArgs}
-	pvPath, pvErr := exec.LookPath("pv")
-	if pvErr == nil && size > 0 {
-		allCmds = append(allCmds, []string{pvPath, "-s", strconv.FormatInt(size, 10)})
-		b.logger.Debug("using pv for progress", "size", size)
-	}
-	allCmds = append(allCmds, receiveArgs)
-
-	_, stderr, err := b.pipeline(allCmds)
-	if err != nil {
-		return b.wrapCmdError("during backup", stderr, err)
+	if b.progressFactory != nil && size > 0 {
+		p := b.progressFactory(fs, size)
+		if err := b.runPipelineWithProgress(sendArgs, receiveArgs, p); err != nil {
+			return err
+		}
+	} else {
+		_, stderr, err := b.pipeline([][]string{sendArgs, receiveArgs})
+		if err != nil {
+			return b.wrapCmdError("during backup", stderr, err)
+		}
 	}
 
 	b.logger.Info("backup complete", "fs", fs, "start", startSnap, "end", endSnap)
