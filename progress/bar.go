@@ -89,11 +89,11 @@ func (b *Bar) draw(output *os.File, width int) {
 
 	pct := float64(pos) / float64(b.target)
 
-	sizeText := fmt.Sprintf("%s / %s", zfs.HumanBytes(pos), zfs.HumanBytes(b.target))
-	rateText := fmt.Sprintf("%s/s", zfs.HumanBytes(int64(b.rate())))
+	sizeText := zfs.HumanBytesFraction(pos, b.target)
+	rateText := zfs.HumanBytesRate(b.rate())
 
-	// 20 (label) + 2 ( [) + 2 (] ) + 4 (pct) + 2 (  ) + sizeText + 2 (  ) + rateText
-	overhead := 20 + 2 + 2 + 4 + 2 + len(sizeText) + 2 + len(rateText)
+	// 20 (label) + 2 ( [) + 2 (] ) + 4 (pct) + 2 (  ) + sizeText + 2 (  ) + 12 (rateText fixed)
+	overhead := 20 + 2 + 2 + 4 + 2 + len(sizeText) + 2 + 12
 	barWidth := max(width-overhead, 5)
 
 	filled := int(pct * float64(barWidth))

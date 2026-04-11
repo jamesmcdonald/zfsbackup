@@ -11,25 +11,45 @@ const (
 	eB
 )
 
-func HumanBytes(size int64) string {
+func unitFor(size int64) (int64, string) {
 	switch {
 	case size >= eB:
-		return format(size, eB, "EiB")
+		return eB, "EiB"
 	case size >= pB:
-		return format(size, pB, "PiB")
+		return pB, "PiB"
 	case size >= tB:
-		return format(size, tB, "TiB")
+		return tB, "TiB"
 	case size >= gB:
-		return format(size, gB, "GiB")
+		return gB, "GiB"
 	case size >= mB:
-		return format(size, mB, "MiB")
+		return mB, "MiB"
 	case size >= kB:
-		return format(size, kB, "kiB")
+		return kB, "kiB"
 	default:
-		return fmt.Sprintf("%d B", size)
+		return 1, "B"
 	}
 }
 
-func format(size int64, unit int64, suffix string) string {
-	return fmt.Sprintf("%.2f %s", float64(size)/float64(unit), suffix)
+func HumanBytes(size int64) string {
+	div, suffix := unitFor(size)
+	if div == 1 {
+		return fmt.Sprintf("%d B", size)
+	}
+	return fmt.Sprintf("%d %s", size/div, suffix)
+}
+
+// HumanBytesFraction formats pos and total as "x/y UUU" using the unit of total.
+func HumanBytesFraction(pos, total int64) string {
+	div, suffix := unitFor(total)
+	if div == 1 {
+		return fmt.Sprintf("%d/%d B", pos, total)
+	}
+	return fmt.Sprintf("%d/%d %s", pos/div, total/div, suffix)
+}
+
+// HumanBytesRate formats a bytes/sec rate as a fixed-width "nnn.nn UUU/s" string.
+// The unit suffix is left-padded to 3 chars so the total width is always 12.
+func HumanBytesRate(bytesPerSec float64) string {
+	div, suffix := unitFor(int64(bytesPerSec))
+	return fmt.Sprintf("%6.2f %-3s/s", bytesPerSec/float64(div), suffix)
 }
