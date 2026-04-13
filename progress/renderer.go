@@ -115,7 +115,7 @@ func (r *Renderer) Run(ctx context.Context) {
 		var active []*Bar
 		r.mu.Lock()
 		for _, bar := range r.bars {
-			if bar.done.Load() {
+			if bar.isDone() {
 				completed = append(completed, bar)
 			} else {
 				active = append(active, bar)

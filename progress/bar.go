@@ -2,6 +2,7 @@ package progress
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"sync"
@@ -11,31 +12,30 @@ import (
 	"github.com/jamesmcdonald/zfsbackup/zfs"
 )
 
-const maxSamples = 60
-
-type sample struct {
-	t time.Time
-	n int64
-}
+// ewmaTau is the time constant (seconds) for the exponential moving average of
+// the transfer rate. Larger values produce a smoother but slower-responding display.
+const ewmaTau = 10.0
 
 type Bar struct {
 	label    string
 	target   int64
 	pos      atomic.Int64
-	done     atomic.Bool
 	abbrLeft bool
 
-	mu          sync.Mutex
-	samples     [maxSamples]sample
-	sampleIdx   int
-	sampleCount int
+	mu           sync.Mutex
+	done         bool
+	startTime    time.Time
+	doneTime     time.Time
+	lastN        int64
+	lastTime     time.Time
+	smoothedRate float64
 }
 
 func NewBar(label string, target int64) *Bar {
 	return &Bar{
-		label:    label,
-		target:   target,
-		abbrLeft: false,
+		label:     label,
+		target:    target,
+		startTime: time.Now(),
 	}
 }
 
@@ -44,7 +44,16 @@ func (b *Bar) Add(n int64) {
 }
 
 func (b *Bar) Done() {
-	b.done.Store(true)
+	b.mu.Lock()
+	b.done = true
+	b.doneTime = time.Now()
+	b.mu.Unlock()
+}
+
+func (b *Bar) isDone() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.done
 }
 
 func (b *Bar) displayLabel(width int) string {
@@ -61,36 +70,56 @@ func (b *Bar) displayLabel(width int) string {
 func (b *Bar) recordSample(n int64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.samples[b.sampleIdx] = sample{t: time.Now(), n: n}
-	b.sampleIdx = (b.sampleIdx + 1) % maxSamples
-	if b.sampleCount < maxSamples {
-		b.sampleCount++
+	now := time.Now()
+	if !b.lastTime.IsZero() {
+		dt := now.Sub(b.lastTime).Seconds()
+		if dt > 0 {
+			instantRate := float64(n-b.lastN) / dt
+			if b.smoothedRate == 0 {
+				b.smoothedRate = instantRate
+			} else {
+				alpha := 1 - math.Exp(-dt/ewmaTau)
+				b.smoothedRate = alpha*instantRate + (1-alpha)*b.smoothedRate
+			}
+		}
 	}
+	b.lastN = n
+	b.lastTime = now
 }
 
 func (b *Bar) rate() float64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.sampleCount < 2 {
+	return b.smoothedRate
+}
+
+// avgRate returns total bytes divided by total elapsed seconds, for use in the
+// done state where the smoothed instantaneous rate is less meaningful.
+func (b *Bar) avgRate() float64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	elapsed := b.doneTime.Sub(b.startTime).Seconds()
+	if elapsed <= 0 {
 		return 0
 	}
-	oldest := (b.sampleIdx - b.sampleCount + maxSamples) % maxSamples
-	newest := (b.sampleIdx - 1 + maxSamples) % maxSamples
-	dt := b.samples[newest].t.Sub(b.samples[oldest].t).Seconds()
-	if dt <= 0 {
-		return 0
-	}
-	return float64(b.samples[newest].n-b.samples[oldest].n) / dt
+	return float64(b.target) / elapsed
+}
+
+func (b *Bar) elapsed() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	secs := int(b.doneTime.Sub(b.startTime).Seconds())
+	return fmt.Sprintf("%03d:%02d:%02d", secs/3600, (secs%3600)/60, secs%60)
 }
 
 func (b *Bar) eta() string {
 	pos := b.pos.Load()
 	r := b.rate()
 	if r <= 0 || pos >= b.target {
-		return "--:--:--"
+		return "---:--:--"
 	}
 	secs := int(float64(b.target-pos) / r)
-	return fmt.Sprintf("%02d:%02d:%02d", secs/3600, (secs%3600)/60, secs%60)
+	return fmt.Sprintf("%03d:%02d:%02d", secs/3600, (secs%3600)/60, secs%60)
 }
 
 func (b *Bar) draw(output *os.File, width, labelWidth int) {
@@ -100,11 +129,20 @@ func (b *Bar) draw(output *os.File, width, labelWidth int) {
 	pct := float64(pos) / float64(b.target)
 
 	sizeText := zfs.HumanBytesFraction(pos, b.target)
-	rateText := zfs.HumanBytesRate(b.rate())
-	etaText := b.eta()
 
-	// labelWidth + 2 ([) + 2 (]) + 8 (eta) + 2 (  ) + 4 (pct) + 2 (  ) + sizeText + 2 (  ) + 12 (rateText fixed)
-	overhead := labelWidth + 2 + 2 + 8 + 2 + 4 + 2 + len(sizeText) + 2 + 12
+	var rateText, etaText, pctText string
+	if b.isDone() {
+		etaText = b.elapsed()
+		pctText = "Done"
+		rateText = zfs.HumanBytesRate(b.avgRate())
+	} else {
+		etaText = b.eta()
+		pctText = fmt.Sprintf("%3.0f%%", pct*100)
+		rateText = zfs.HumanBytesRate(b.rate())
+	}
+
+	// labelWidth + 2 ([) + 2 (]) + 9 (eta) + 2 (  ) + 4 (pct) + 2 (  ) + sizeText + 2 (  ) + 12 (rateText fixed)
+	overhead := labelWidth + 2 + 2 + 9 + 2 + 4 + 2 + len(sizeText) + 2 + 12
 	barWidth := max(width-overhead, 5)
 
 	filled := int(pct * float64(barWidth))
@@ -115,10 +153,6 @@ func (b *Bar) draw(output *os.File, width, labelWidth int) {
 	}
 
 	dl := b.displayLabel(labelWidth)
-	pctText := "Done"
-	if !b.done.Load() {
-		pctText = fmt.Sprintf("%3.0f%%", pct*100)
-	}
 	// Kill to EOL after printing
 	fmt.Fprintf(output, "%*s [%-*s] %s  %s  %s  %s\033[0K\n", labelWidth, dl, barWidth, strings.Repeat(fillChar, filled), etaText, pctText, sizeText, rateText)
 }

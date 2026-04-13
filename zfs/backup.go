@@ -396,17 +396,37 @@ func (b *Backup) runPipelineWithProgress(sendArgs, receiveArgs []string, p Progr
 		return fmt.Errorf("error starting receive: %w", err)
 	}
 
-	var errs []error
-	if err := sendCmd.Wait(); err != nil {
-		errs = append(errs, fmt.Errorf("send failed: %w", err))
+	// Wait for both processes concurrently. Whichever fails first is the root
+	// cause; we kill the other side so it doesn't hang (send blocked writing to
+	// a full pipe, or recv stuck on disk I/O). sync.Once ensures the consequent
+	// "signal: killed" error from the side we terminate is not reported.
+	var (
+		firstErr  error
+		firstOnce sync.Once
+	)
+	setFirst := func(label string, err error) {
+		firstOnce.Do(func() { firstErr = fmt.Errorf("%s failed: %w", label, err) })
 	}
+
+	sendErrCh := make(chan error, 1)
+	go func() {
+		err := sendCmd.Wait()
+		if err != nil {
+			setFirst("send", err)
+			recvCmd.Process.Kill()
+		}
+		sendErrCh <- err
+	}()
+
 	if err := recvCmd.Wait(); err != nil {
-		errs = append(errs, fmt.Errorf("receive failed: %w", err))
+		setFirst("receive", err)
+		sendCmd.Process.Kill()
 	}
+	<-sendErrCh
 	p.Done()
 
-	if len(errs) > 0 {
-		return b.wrapCmdError("during backup", strings.TrimSpace(stderrBuf.String()), errs[0])
+	if firstErr != nil {
+		return b.wrapCmdError("during backup", strings.TrimSpace(stderrBuf.String()), firstErr)
 	}
 	return nil
 }
@@ -617,10 +637,18 @@ func (b *Backup) RunBackup(sources []Source) error {
 		return firstErr
 	}
 
-	// Phase 3: clean snapshots
+	// Phase 3: clean snapshots on source and destination.
+	// Both sides are trimmed to the same retain count so they always share the
+	// most-recently-backed-up snapshot, keeping incremental transfers possible.
 	for _, s := range states {
 		if err := b.cleanSnapshots(s.src.vol, 2, s.src.recurse); err != nil {
 			return err
+		}
+		targetVol := fmt.Sprintf("%s/%s", b.target, s.src.vol)
+		if b.datasetExists(targetVol) {
+			if err := b.cleanSnapshots(targetVol, 2, s.src.recurse); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
