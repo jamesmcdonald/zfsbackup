@@ -494,6 +494,12 @@ func (b *Backup) backupSource(src Source) error {
 		if err := b.cleanSnapshots(fs, 2, src.recurse); err != nil {
 			return err
 		}
+		targetVol := fmt.Sprintf("%s/%s", b.target, fs)
+		if b.datasetExists(targetVol) {
+			if err := b.cleanSnapshots(targetVol, 2, src.recurse); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
