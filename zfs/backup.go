@@ -491,9 +491,11 @@ func (b *Backup) backupSource(src Source) error {
 		if err := b.backupFilesystem(fs, snapName); err != nil {
 			return err
 		}
+		if err := b.cleanSnapshots(fs, 2, src.recurse); err != nil {
+			return err
+		}
 	}
-
-	return b.cleanSnapshots(src.vol, 2, src.recurse)
+	return nil
 }
 
 // RunBackup backs up each source in order, failing fast on any error.
