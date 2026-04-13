@@ -432,7 +432,7 @@ func (b *Backup) runPipelineWithProgress(sendArgs, receiveArgs []string, p Progr
 }
 
 func (b *Backup) runSingleBackup(fs, startSnap, endSnap string, size int64) error {
-	b.logger.Info("backup starting", "fs", fs, "start", startSnap, "end", endSnap)
+	b.logger.Debug("backup starting", "fs", fs, "start", startSnap, "end", endSnap)
 
 	var sendArgs []string
 	if startSnap != "" {
@@ -454,7 +454,7 @@ func (b *Backup) runSingleBackup(fs, startSnap, endSnap string, size int64) erro
 		}
 	}
 
-	b.logger.Info("backup complete", "fs", fs, "start", startSnap, "end", endSnap)
+	b.logger.Debug("backup complete", "fs", fs, "start", startSnap, "end", endSnap)
 	return nil
 }
 
@@ -556,7 +556,7 @@ func (b *Backup) backupFilesystem(fs, snapName string) error {
 		return nil
 	}
 
-	b.logger.Info("estimated backup size", "fs", fs, "size", size, "human_size", HumanBytes(size))
+	b.logger.Debug("estimated backup size", "fs", fs, "size", size, "human_size", HumanBytes(size))
 	return b.runSingleBackup(fs, startSnap, fsSnap, size)
 }
 
