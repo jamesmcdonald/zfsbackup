@@ -53,24 +53,32 @@ impl JobBuilder {
         self
     }
 
-    pub fn build(self) -> Job {
-        for source in &self.sources {
-            let mut cmd = self.source_zfs_command.clone();
-            let mut args = vec!["list".to_string(), source.clone()];
-            cmd.append(&mut args);
-            match command::exec_command(&cmd) {
-                Ok(_) => (),
-                Err(e) => panic!("Cannot list source dataset {}: {}", source, e),
-            }
-            println!("Source: {}", source);
-        }
-        Job {
-            datasets: vec!["dataset1".to_string(), "dataset2".to_string()],
+    pub fn build(self) -> Result<Job, String> {
+        let mut job = Job {
+            datasets: vec![],
             target: self.target,
             source_zfs_command: self.source_zfs_command,
             target_zfs_command: self.target_zfs_command,
             dryrun: self.dryrun,
+        };
+        let mut datasets: Vec<String> = vec![];
+        for source in &self.sources {
+            let recurse = source.ends_with("/...");
+            let source = source.trim_end_matches("/...");
+
+            let mut args = vec!["list", "-H", "-o", "name"];
+            if recurse {
+                args.push("-r");
+            }
+            args.push(source);
+
+            let mut cmd = job.get_side_command(JobSide::Source);
+            cmd.extend(args);
+            let output = command::exec_command(&cmd)?;
+            datasets = [datasets, output.lines().map(&str::to_string).collect()].concat();
         }
+        job.datasets = datasets;
+        Ok(job)
     }
 }
 
@@ -80,4 +88,26 @@ pub struct Job {
     source_zfs_command: Vec<String>,
     target_zfs_command: Vec<String>,
     dryrun: bool,
+}
+
+enum JobSide {
+    Source,
+    Destination,
+}
+
+impl Job {
+    pub fn dump(&self) {
+        println!("Datasets: {:?}", self.datasets);
+        println!("Target: {}", self.target);
+        println!("Source ZFS Command: {:?}", self.source_zfs_command);
+        println!("Target ZFS Command: {:?}", self.target_zfs_command);
+        println!("Dryrun: {}", self.dryrun);
+    }
+
+    fn get_side_command(&self, side: JobSide) -> Vec<&str> {
+        match side {
+            JobSide::Source => self.source_zfs_command.iter().map(|s| s.as_str()).collect(),
+            JobSide::Destination => self.target_zfs_command.iter().map(|s| s.as_str()).collect(),
+        }
+    }
 }

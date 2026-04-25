@@ -1,4 +1,4 @@
-pub fn exec_command(command: &Vec<String>) -> Result<(), String> {
+pub fn exec_command(command: &Vec<&str>) -> Result<String, String> {
     if command.is_empty() {
         return Err("Command is empty".to_string());
     }
@@ -15,5 +15,6 @@ pub fn exec_command(command: &Vec<String>) -> Result<(), String> {
             String::from_utf8_lossy(&output.stderr)
         ));
     }
-    Ok(())
+    let output_str = String::from_utf8_lossy(&output.stdout).to_string();
+    Ok(output_str)
 }
