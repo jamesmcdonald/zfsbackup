@@ -1,7 +1,10 @@
 use clap::Parser;
-use std::env::args;
 
-use zfsbackup::JobBuilder;
+use std::error::Error;
+use std::sync::mpsc::channel;
+use std::thread;
+use zfsbackup::job::JobBuilder;
+use zfsbackup::progress::ProgressReporter;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -24,7 +27,7 @@ struct Args {
     datasets: Vec<String>,
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
     let mut builder = JobBuilder::new(args.datasets, args.target);
     if args.dry_run {
@@ -39,6 +42,14 @@ fn main() {
     if let Some(cmd) = args.target_zfs_command {
         builder = builder.target_zfs_command(&cmd);
     }
-    let job = builder.build().expect("asplode");
-    job.run().expect("boom");
+
+    let (tx, rx) = channel();
+    let mut pr = ProgressReporter::new(rx);
+    thread::spawn(move || pr.run());
+
+    builder = builder.sender(tx);
+
+    let job = builder.build()?;
+    job.run()?;
+    Ok(())
 }

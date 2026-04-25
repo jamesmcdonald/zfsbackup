@@ -1,3 +1,9 @@
+use crate::progress::BackupEvent;
+use std::io;
+use std::io::Read;
+use std::sync::mpsc::Sender;
+use std::time::{Duration, Instant};
+
 pub fn exec_command(command: &Vec<&str>) -> Result<String, String> {
     if command.is_empty() {
         return Err("Command is empty".to_string());
@@ -19,7 +25,46 @@ pub fn exec_command(command: &Vec<&str>) -> Result<String, String> {
     Ok(output_str)
 }
 
-pub fn exec_piped_commands(source: &Vec<&str>, dest: &Vec<&str>) -> Result<(), String> {
+struct CountingReader<R: Read> {
+    inner: R,
+    sender: Sender<BackupEvent>,
+    bytes_read: u64,
+    last_send: Instant,
+}
+
+impl<R: Read> Read for CountingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.bytes_read += n as u64;
+        if self.last_send.elapsed().as_millis() >= 100 {
+            self.sender
+                .send(BackupEvent::BytesTransferred {
+                    dataset: String::from(""),
+                    bytes: self.bytes_read,
+                })
+                .ok();
+            self.last_send = Instant::now();
+        }
+        Ok(n)
+    }
+}
+
+impl<R: Read> CountingReader<R> {
+    fn new(inner: R, sender: Sender<BackupEvent>) -> Self {
+        Self {
+            inner,
+            sender,
+            bytes_read: 0,
+            last_send: Instant::now() - Duration::from_secs(1),
+        }
+    }
+}
+
+pub fn exec_piped_commands(
+    source: &Vec<&str>,
+    dest: &Vec<&str>,
+    sender: Option<Sender<BackupEvent>>,
+) -> Result<(), String> {
     if source.is_empty() || dest.is_empty() {
         return Err("Source or destination command is empty".to_string());
     }
@@ -38,9 +83,18 @@ pub fn exec_piped_commands(source: &Vec<&str>, dest: &Vec<&str>) -> Result<(), S
         .map_err(|e| e.to_string())?;
 
     let mut receive_process = receive_cmd
-        .stdin(send_process.stdout.take().unwrap())
+        .stdin(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| e.to_string())?;
+
+    let send_stdout = send_process.stdout.take().unwrap();
+    let mut receive_stdin = receive_process.stdin.take().unwrap();
+
+    let mut reader: Box<dyn Read> = match sender {
+        Some(s) => Box::new(CountingReader::new(send_stdout, s)),
+        None => Box::new(send_stdout),
+    };
+    std::io::copy(&mut reader, &mut receive_stdin).map_err(|e| e.to_string())?;
 
     let receive_status = receive_process.wait().map_err(|e| e.to_string())?;
     let send_status = send_process.wait().map_err(|e| e.to_string())?;
