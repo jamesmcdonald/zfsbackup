@@ -24,6 +24,9 @@ struct Args {
     #[arg(short, long)]
     dry_run: bool,
 
+    #[arg(short, long)]
+    retain: Option<usize>,
+
     datasets: Vec<String>,
 }
 
@@ -41,6 +44,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     if let Some(cmd) = args.target_zfs_command {
         builder = builder.target_zfs_command(&cmd);
+    }
+    if let Some(retain) = args.retain {
+        builder = builder.retain(retain);
     }
 
     let (tx, rx) = channel();
