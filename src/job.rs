@@ -1,5 +1,6 @@
 use crate::command;
 use crate::progress::BackupEvent;
+use crate::progress::filter;
 use chrono::{Local, NaiveDateTime};
 use std::collections::HashSet;
 use std::sync::mpsc::Sender;
@@ -192,7 +193,11 @@ impl Job {
 
         let mut receive_cmd = self.get_side_command(JobSide::Destination);
         receive_cmd.extend(["receive", "-F", dest]);
-        command::exec_piped_commands(&send_cmd, &receive_cmd, self.sender.clone(), total)?;
+        let filters = match self.sender.as_ref() {
+            Some(sender) => vec![filter::CountingReaderBuilder::build(sender.clone(), total)],
+            None => vec![],
+        };
+        command::exec_piped_commands(&send_cmd, &receive_cmd, filters)?;
         self.send_event(BackupEvent::DatasetCompleted(source.to_string()));
         Ok(())
     }

@@ -1,11 +1,11 @@
 use clap::Parser;
 
 use std::error::Error;
+use std::io::IsTerminal;
 use std::sync::mpsc::channel;
 use std::thread;
 use zfsbackup::job::JobBuilder;
-use zfsbackup::progress::Progressor;
-use zfsbackup::progress::terminal;
+use zfsbackup::progress::{Progressor, log, terminal};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -51,7 +51,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let (tx, rx) = channel();
-    let mut pr: Box<dyn Progressor> = Box::new(terminal::Progressor::new(rx));
+    let mut pr: Box<dyn Progressor> = if std::io::stdout().is_terminal() {
+        Box::new(terminal::Progressor::new(rx))
+    } else {
+        Box::new(log::Progressor::new(rx))
+    };
     thread::spawn(move || pr.run());
 
     builder = builder.sender(tx);
