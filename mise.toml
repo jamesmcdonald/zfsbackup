@@ -1,0 +1,6 @@
+[tools]
+rust = "stable"
+zig = "latest"
+
+[tasks]
+build = "cargo build"
