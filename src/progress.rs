@@ -50,7 +50,7 @@ impl ProgressReporter {
                     total,
                 } => {
                     println!(
-                        "Starting full backup of {} to {} ({} of {})",
+                        "\nStarting full backup of {} to {} ({} of {})",
                         source, dest, index, total
                     );
                 }
@@ -61,7 +61,7 @@ impl ProgressReporter {
                     total,
                 } => {
                     println!(
-                        "Starting incremental backup of {} to {} ({} of {})",
+                        "\nStarting incremental backup of {} to {} ({} of {})",
                         source, dest, index, total
                     );
                 }
