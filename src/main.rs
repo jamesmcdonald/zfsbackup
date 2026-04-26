@@ -4,7 +4,8 @@ use std::error::Error;
 use std::sync::mpsc::channel;
 use std::thread;
 use zfsbackup::job::JobBuilder;
-use zfsbackup::progress::ProgressReporter;
+use zfsbackup::progress::Progressor;
+use zfsbackup::progress::terminal;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -50,7 +51,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let (tx, rx) = channel();
-    let mut pr = ProgressReporter::new(rx);
+    let mut pr: Box<dyn Progressor> = Box::new(terminal::Progressor::new(rx));
     thread::spawn(move || pr.run());
 
     builder = builder.sender(tx);

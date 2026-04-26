@@ -181,6 +181,7 @@ impl Job {
         source: &str,
         dest: &str,
         inc_snapshot: Option<&str>,
+        total: Option<u64>,
     ) -> Result<(), String> {
         let mut send_cmd = self.get_side_command(JobSide::Source);
         send_cmd.push("send");
@@ -191,7 +192,7 @@ impl Job {
 
         let mut receive_cmd = self.get_side_command(JobSide::Destination);
         receive_cmd.extend(["receive", "-F", dest]);
-        command::exec_piped_commands(&send_cmd, &receive_cmd, self.sender.clone())?;
+        command::exec_piped_commands(&send_cmd, &receive_cmd, self.sender.clone(), total)?;
         self.send_event(BackupEvent::DatasetCompleted(source.to_string()));
         Ok(())
     }
@@ -313,8 +314,16 @@ impl Job {
                 );
 
                 let snapshot = self.create_snapshot(source, JobSide::Source)?;
-                self.estimate(&snapshot, Some(&inc_snapshot)).ok();
-                self.send_receive(&snapshot, &dest, Some(&inc_snapshot))?;
+                let total = self.estimate(&snapshot, Some(&inc_snapshot)).ok();
+                if self.dryrun {
+                    self.send_event(BackupEvent::DryrunCompleted(source.clone()));
+                    self.delete_snapshot(Snapshot {
+                        snapshot: snapshot.clone(),
+                        side: JobSide::Source,
+                    })?;
+                    return Ok(());
+                }
+                self.send_receive(&snapshot, &dest, Some(&inc_snapshot), total)?;
             } else {
                 self.send_event(BackupEvent::StartingFullBackup {
                     source: source.clone(),
@@ -323,8 +332,16 @@ impl Job {
                     total: self.datasets.len(),
                 });
                 let snapshot = self.create_snapshot(source, JobSide::Source)?;
-                self.estimate(&snapshot, None).ok();
-                self.send_receive(&snapshot, &dest, None)?;
+                let total = self.estimate(&snapshot, None).ok();
+                if self.dryrun {
+                    self.send_event(BackupEvent::DryrunCompleted(source.clone()));
+                    self.delete_snapshot(Snapshot {
+                        snapshot: snapshot.clone(),
+                        side: JobSide::Source,
+                    })?;
+                    return Ok(());
+                }
+                self.send_receive(&snapshot, &dest, None, total)?;
             }
 
             // Clean up snapshots

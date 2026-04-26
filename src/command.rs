@@ -28,19 +28,20 @@ pub fn exec_command(command: &Vec<&str>) -> Result<String, String> {
 struct CountingReader<R: Read> {
     inner: R,
     sender: Sender<BackupEvent>,
-    bytes_read: u64,
+    bytes: u64,
     last_send: Instant,
+    total: Option<u64>,
 }
 
 impl<R: Read> Read for CountingReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let n = self.inner.read(buf)?;
-        self.bytes_read += n as u64;
+        self.bytes += n as u64;
         if self.last_send.elapsed().as_millis() >= 100 {
             self.sender
                 .send(BackupEvent::BytesTransferred {
-                    dataset: String::from(""),
-                    bytes: self.bytes_read,
+                    bytes: self.bytes,
+                    estimated_total: self.total,
                 })
                 .ok();
             self.last_send = Instant::now();
@@ -50,11 +51,12 @@ impl<R: Read> Read for CountingReader<R> {
 }
 
 impl<R: Read> CountingReader<R> {
-    fn new(inner: R, sender: Sender<BackupEvent>) -> Self {
+    fn new(inner: R, sender: Sender<BackupEvent>, total: Option<u64>) -> Self {
         Self {
             inner,
             sender,
-            bytes_read: 0,
+            total,
+            bytes: 0,
             last_send: Instant::now() - Duration::from_secs(1),
         }
     }
@@ -64,6 +66,7 @@ pub fn exec_piped_commands(
     source: &Vec<&str>,
     dest: &Vec<&str>,
     sender: Option<Sender<BackupEvent>>,
+    total: Option<u64>,
 ) -> Result<(), String> {
     if source.is_empty() || dest.is_empty() {
         return Err("Source or destination command is empty".to_string());
@@ -91,7 +94,7 @@ pub fn exec_piped_commands(
     let mut receive_stdin = receive_process.stdin.take().unwrap();
 
     let mut reader: Box<dyn Read> = match sender {
-        Some(s) => Box::new(CountingReader::new(send_stdout, s)),
+        Some(s) => Box::new(CountingReader::new(send_stdout, s, total)),
         None => Box::new(send_stdout),
     };
     std::io::copy(&mut reader, &mut receive_stdin).map_err(|e| e.to_string())?;
