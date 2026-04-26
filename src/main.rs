@@ -10,6 +10,7 @@ use zfsbackup::progress::{Progressor, log, terminal};
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Args {
+    /// Target dataset for the backup
     #[arg(short, default_value = "backup")]
     target: String,
 
