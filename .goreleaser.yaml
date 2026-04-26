@@ -9,3 +9,7 @@ builds:
       - aarch64-unknown-linux-gnu
 archives:
   - formats: ["binary"]
+
+gitea_urls:
+  api: https://git.shee.sh/api/v1
+  download: https://git.shee.sh
