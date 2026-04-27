@@ -2,12 +2,13 @@ use crate::command;
 use crate::progress::BackupEvent;
 use crate::progress::filter;
 use chrono::{Local, NaiveDateTime};
+use indexmap::set::IndexSet;
 use std::collections::HashSet;
 use std::fmt;
 use std::sync::mpsc::Sender;
 
 pub struct Job {
-    datasets: HashSet<String>,
+    datasets: IndexSet<String>,
     target: String,
     source_zfs_command: Vec<String>,
     target_zfs_command: Vec<String>,
@@ -284,24 +285,23 @@ fn parse_command(commandstr: &str) -> Vec<String> {
 
     for c in commandstr.chars() {
         match c {
+            '\'' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+            }
             '\'' => {
-                if !in_double_quote {
-                    in_single_quote = !in_single_quote;
-                } else {
-                    arg.push(c);
-                }
+                arg.push(c);
+            }
+            '"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
             }
             '"' => {
-                if !in_single_quote {
-                    in_double_quote = !in_double_quote;
-                } else {
-                    arg.push(c);
-                }
+                arg.push(c);
+            }
+            ' ' if in_single_quote || in_double_quote => {
+                arg.push(c);
             }
             ' ' => {
-                if in_single_quote || in_double_quote {
-                    arg.push(c);
-                } else if !arg.is_empty() {
+                if !arg.is_empty() {
                     command.push(arg.clone());
                     arg.clear();
                 }
@@ -362,7 +362,7 @@ impl JobBuilder {
     }
 
     pub fn build(self) -> Result<Job, String> {
-        let mut datasets: HashSet<String> = HashSet::new();
+        let mut datasets: IndexSet<String> = IndexSet::new();
         for source in &self.sources {
             let recurse = source.ends_with("/...");
             let source = source.trim_end_matches("/...");
@@ -382,7 +382,7 @@ impl JobBuilder {
             return Err(String::from("no matching source datasets found"));
         }
         Ok(Job {
-            datasets: datasets,
+            datasets,
             target: self.target,
             source_zfs_command: self.source_zfs_command,
             target_zfs_command: self.target_zfs_command,
