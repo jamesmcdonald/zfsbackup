@@ -10,7 +10,6 @@ pub struct Job {
     target: String,
     source_zfs_command: Vec<String>,
     target_zfs_command: Vec<String>,
-    dryrun: bool,
     retain: usize,
     sender: Option<Sender<BackupEvent>>,
 }
@@ -33,7 +32,6 @@ impl Job {
         println!("Target: {}", self.target);
         println!("Source ZFS Command: {:?}", self.source_zfs_command);
         println!("Target ZFS Command: {:?}", self.target_zfs_command);
-        println!("Dryrun: {}", self.dryrun);
     }
 
     fn send_event(&self, event: BackupEvent) {
@@ -191,7 +189,7 @@ impl Job {
         res
     }
 
-    pub fn run(&self) -> Result<(), String> {
+    pub fn run(&self, execute: bool) -> Result<(), String> {
         for (index, source) in self.datasets.iter().enumerate() {
             // Check the source exists
             let mut cmd = self.get_side_command(JobSide::Source);
@@ -222,7 +220,7 @@ impl Job {
 
                 let snapshot = self.create_snapshot(source, JobSide::Source)?;
                 let total = self.estimate(&snapshot, Some(&inc_snapshot)).ok();
-                if self.dryrun {
+                if !execute {
                     self.send_event(BackupEvent::DryrunCompleted(source.clone()));
                     self.delete_snapshot(Snapshot {
                         snapshot: snapshot.clone(),
@@ -240,7 +238,7 @@ impl Job {
                 });
                 let snapshot = self.create_snapshot(source, JobSide::Source)?;
                 let total = self.estimate(&snapshot, None).ok();
-                if self.dryrun {
+                if !execute {
                     self.send_event(BackupEvent::DryrunCompleted(source.clone()));
                     self.delete_snapshot(Snapshot {
                         snapshot: snapshot.clone(),
@@ -266,7 +264,6 @@ pub struct JobBuilder {
     target: String,
     source_zfs_command: Vec<String>,
     target_zfs_command: Vec<String>,
-    dryrun: bool,
     retain: usize,
     sender: Option<Sender<BackupEvent>>,
 }
@@ -324,7 +321,6 @@ impl JobBuilder {
             target,
             source_zfs_command: vec!["zfs".to_string()],
             target_zfs_command: vec!["zfs".to_string()],
-            dryrun: false,
             retain: 2,
             sender: None,
         }
@@ -346,11 +342,6 @@ impl JobBuilder {
         let command = parse_command(commandstr);
         self.source_zfs_command = command.clone();
         self.target_zfs_command = command;
-        self
-    }
-
-    pub fn dryrun(mut self) -> Self {
-        self.dryrun = true;
         self
     }
 
@@ -389,11 +380,17 @@ impl JobBuilder {
             target: self.target,
             source_zfs_command: self.source_zfs_command,
             target_zfs_command: self.target_zfs_command,
-            dryrun: self.dryrun,
             retain: self.retain,
             sender: self.sender,
         })
     }
+}
+
+struct JobConfig {
+    sources: Vec<String>,
+    target: String,
+    source_zfs_command: Option<String>,
+    target_zfs_command: Option<String>,
 }
 
 #[cfg(test)]

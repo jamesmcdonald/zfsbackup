@@ -35,9 +35,6 @@ struct Args {
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
     let mut builder = JobBuilder::new(args.datasets, args.target);
-    if args.dry_run {
-        builder = builder.dryrun();
-    }
     if let Some(cmd) = args.zfs_command {
         builder = builder.zfs_command(&cmd);
     }
@@ -62,6 +59,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     builder = builder.sender(tx);
 
     let job = builder.build()?;
-    job.run()?;
+    job.run(!args.dry_run)?;
     Ok(())
 }
