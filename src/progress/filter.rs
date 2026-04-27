@@ -4,7 +4,7 @@ use std::io::{self, Read};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
-struct CountingReader<R: Read> {
+struct ByteCountReader<R: Read> {
     inner: R,
     sender: Sender<BackupEvent>,
     bytes: u64,
@@ -12,7 +12,7 @@ struct CountingReader<R: Read> {
     total: Option<u64>,
 }
 
-impl<R: Read> Read for CountingReader<R> {
+impl<R: Read> Read for ByteCountReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let n = self.inner.read(buf)?;
         self.bytes += n as u64;
@@ -29,31 +29,31 @@ impl<R: Read> Read for CountingReader<R> {
     }
 }
 
-impl<R: Read> CountingReader<R> {
+impl<R: Read> ByteCountReader<R> {
     fn new(inner: R, sender: Sender<BackupEvent>, total: Option<u64>) -> Self {
         Self {
             inner,
             sender,
-            total,
             bytes: 0,
             last_send: Instant::now() - Duration::from_secs(1),
+            total,
         }
     }
 }
 
-pub struct CountingReaderBuilder {
+pub(crate) struct ByteCountFilter {
     sender: Sender<BackupEvent>,
     total: Option<u64>,
 }
 
-impl Filter for CountingReaderBuilder {
-    fn filter(&self, reader: Box<dyn Read>) -> Box<dyn Read> {
-        Box::new(CountingReader::new(reader, self.sender.clone(), self.total))
+impl ByteCountFilter {
+    pub(crate) fn new(sender: Sender<BackupEvent>, total: Option<u64>) -> Self {
+        Self { sender, total }
     }
 }
 
-impl CountingReaderBuilder {
-    pub fn build(sender: Sender<BackupEvent>, total: Option<u64>) -> Box<dyn Filter> {
-        Box::new(Self { sender, total })
+impl Filter for ByteCountFilter {
+    fn filter(&self, inner: Box<dyn Read>) -> Box<dyn Read> {
+        Box::new(ByteCountReader::new(inner, self.sender.clone(), self.total))
     }
 }
