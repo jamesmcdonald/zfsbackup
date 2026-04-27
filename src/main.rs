@@ -54,11 +54,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     } else {
         Box::new(log::Progressor::new(rx))
     };
-    thread::spawn(move || pr.run());
-
+    let handle = thread::spawn(move || pr.run());
     builder = builder.sender(tx);
 
-    let job = builder.build()?;
-    job.run(!args.dry_run)?;
+    // Create the job in a block so the sender is dropped before
+    // joining the progress thread, allowing it to exit cleanly.
+    {
+        let job = builder.build()?;
+        job.run(!args.dry_run)?;
+    }
+    handle.join().unwrap();
     Ok(())
 }
