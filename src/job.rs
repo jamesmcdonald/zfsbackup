@@ -71,7 +71,7 @@ impl JobBuilder {
 
     pub fn build(self) -> Result<Job, String> {
         let mut job = Job {
-            datasets: vec![],
+            datasets: HashSet::new(),
             target: self.target,
             source_zfs_command: self.source_zfs_command,
             target_zfs_command: self.target_zfs_command,
@@ -79,7 +79,7 @@ impl JobBuilder {
             retain: self.retain,
             sender: self.sender,
         };
-        let mut datasets: Vec<String> = vec![];
+        let mut datasets: HashSet<String> = HashSet::new();
         for source in &self.sources {
             let recurse = source.ends_with("/...");
             let source = source.trim_end_matches("/...");
@@ -104,7 +104,7 @@ impl JobBuilder {
 }
 
 pub struct Job {
-    datasets: Vec<String>,
+    datasets: HashSet<String>,
     target: String,
     source_zfs_command: Vec<String>,
     target_zfs_command: Vec<String>,
