@@ -5,104 +5,6 @@ use chrono::{Local, NaiveDateTime};
 use std::collections::HashSet;
 use std::sync::mpsc::Sender;
 
-pub struct JobBuilder {
-    sources: Vec<String>,
-    target: String,
-    source_zfs_command: Vec<String>,
-    target_zfs_command: Vec<String>,
-    dryrun: bool,
-    retain: usize,
-    sender: Option<Sender<BackupEvent>>,
-}
-
-fn parse_command(commandstr: &str) -> Vec<String> {
-    commandstr
-        .split_whitespace()
-        .map(|s| s.to_string())
-        .collect()
-}
-
-impl JobBuilder {
-    pub fn new(sources: Vec<String>, target: String) -> Self {
-        JobBuilder {
-            sources,
-            target,
-            source_zfs_command: vec!["zfs".to_string()],
-            target_zfs_command: vec!["zfs".to_string()],
-            dryrun: false,
-            retain: 2,
-            sender: None,
-        }
-    }
-
-    pub fn source_zfs_command(mut self, commandstr: &str) -> Self {
-        let command = parse_command(commandstr);
-        self.source_zfs_command = command;
-        self
-    }
-
-    pub fn target_zfs_command(mut self, commandstr: &str) -> Self {
-        let command = parse_command(commandstr);
-        self.target_zfs_command = command;
-        self
-    }
-
-    pub fn zfs_command(mut self, commandstr: &str) -> Self {
-        let command = parse_command(commandstr);
-        self.source_zfs_command = command.clone();
-        self.target_zfs_command = command;
-        self
-    }
-
-    pub fn dryrun(mut self) -> Self {
-        self.dryrun = true;
-        self
-    }
-
-    pub fn retain(mut self, retain: usize) -> Self {
-        self.retain = retain;
-        self
-    }
-
-    pub fn sender(mut self, sender: Sender<BackupEvent>) -> Self {
-        self.sender = Some(sender);
-        self
-    }
-
-    pub fn build(self) -> Result<Job, String> {
-        let mut job = Job {
-            datasets: HashSet::new(),
-            target: self.target,
-            source_zfs_command: self.source_zfs_command,
-            target_zfs_command: self.target_zfs_command,
-            dryrun: self.dryrun,
-            retain: self.retain,
-            sender: self.sender,
-        };
-        let mut datasets: HashSet<String> = HashSet::new();
-        for source in &self.sources {
-            let recurse = source.ends_with("/...");
-            let source = source.trim_end_matches("/...");
-
-            let mut args = vec!["list", "-H", "-o", "name"];
-            if recurse {
-                args.push("-r");
-            }
-            args.push(source);
-
-            let mut cmd = job.get_side_command(JobSide::Source);
-            cmd.extend(args);
-            let output = command::exec_command(&cmd)?;
-            datasets.extend(output.lines().map(str::to_string));
-        }
-        if datasets.is_empty() {
-            return Err(String::from("no matching source datasets found"));
-        }
-        job.datasets = datasets;
-        Ok(job)
-    }
-}
-
 pub struct Job {
     datasets: HashSet<String>,
     target: String,
@@ -356,5 +258,187 @@ impl Job {
                 .collect::<Result<Vec<_>, _>>()?;
         }
         Ok(())
+    }
+}
+
+pub struct JobBuilder {
+    sources: Vec<String>,
+    target: String,
+    source_zfs_command: Vec<String>,
+    target_zfs_command: Vec<String>,
+    dryrun: bool,
+    retain: usize,
+    sender: Option<Sender<BackupEvent>>,
+}
+
+/// Parse a command string into a vector of strings, splitting on whitespace.
+/// Quoting is supported using ' or ".
+fn parse_command(commandstr: &str) -> Vec<String> {
+    let mut arg = String::new();
+    let mut command: Vec<String> = Vec::new();
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+
+    for c in commandstr.chars() {
+        match c {
+            '\'' => {
+                if !in_double_quote {
+                    in_single_quote = !in_single_quote;
+                } else {
+                    arg.push(c);
+                }
+            }
+            '"' => {
+                if !in_single_quote {
+                    in_double_quote = !in_double_quote;
+                } else {
+                    arg.push(c);
+                }
+            }
+            ' ' => {
+                if in_single_quote || in_double_quote {
+                    arg.push(c);
+                } else if !arg.is_empty() {
+                    command.push(arg.clone());
+                    arg.clear();
+                }
+            }
+            _ => {
+                arg.push(c);
+            }
+        }
+    }
+    if !arg.is_empty() {
+        command.push(arg);
+    }
+    command
+}
+
+impl JobBuilder {
+    /// Create a new JobBuilder with the given sources and target. The sources should be ZFS
+    /// datasets, optionally ending with "/..." to include all child datasets. The target should be
+    /// a ZFS dataset.
+    pub fn new(sources: Vec<String>, target: String) -> Self {
+        JobBuilder {
+            sources,
+            target,
+            source_zfs_command: vec!["zfs".to_string()],
+            target_zfs_command: vec!["zfs".to_string()],
+            dryrun: false,
+            retain: 2,
+            sender: None,
+        }
+    }
+
+    pub fn source_zfs_command(mut self, commandstr: &str) -> Self {
+        let command = parse_command(commandstr);
+        self.source_zfs_command = command;
+        self
+    }
+
+    pub fn target_zfs_command(mut self, commandstr: &str) -> Self {
+        let command = parse_command(commandstr);
+        self.target_zfs_command = command;
+        self
+    }
+
+    pub fn zfs_command(mut self, commandstr: &str) -> Self {
+        let command = parse_command(commandstr);
+        self.source_zfs_command = command.clone();
+        self.target_zfs_command = command;
+        self
+    }
+
+    pub fn dryrun(mut self) -> Self {
+        self.dryrun = true;
+        self
+    }
+
+    pub fn retain(mut self, retain: usize) -> Self {
+        self.retain = retain;
+        self
+    }
+
+    pub fn sender(mut self, sender: Sender<BackupEvent>) -> Self {
+        self.sender = Some(sender);
+        self
+    }
+
+    pub fn build(self) -> Result<Job, String> {
+        let mut datasets: HashSet<String> = HashSet::new();
+        for source in &self.sources {
+            let recurse = source.ends_with("/...");
+            let source = source.trim_end_matches("/...");
+
+            let mut args = vec!["list", "-H", "-o", "name"];
+            if recurse {
+                args.push("-r");
+            }
+            args.push(source);
+
+            let mut cmd: Vec<&str> = self.source_zfs_command.iter().map(|s| s.as_str()).collect();
+            cmd.extend(args);
+            let output = command::exec_command(&cmd)?;
+            datasets.extend(output.lines().map(str::to_string));
+        }
+        if datasets.is_empty() {
+            return Err(String::from("no matching source datasets found"));
+        }
+        Ok(Job {
+            datasets: datasets,
+            target: self.target,
+            source_zfs_command: self.source_zfs_command,
+            target_zfs_command: self.target_zfs_command,
+            dryrun: self.dryrun,
+            retain: self.retain,
+            sender: self.sender,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_command_simple() {
+        assert_eq!(parse_command("zfs list"), vec!["zfs", "list"]);
+    }
+
+    #[test]
+    fn test_parse_command_quoted() {
+        assert_eq!(
+            parse_command("ssh host sudo zfs"),
+            vec!["ssh", "host", "sudo", "zfs"]
+        );
+    }
+
+    #[test]
+    fn test_parse_command_with_quotes() {
+        assert_eq!(
+            parse_command(r#"ssh "my host" sudo zfs"#),
+            vec!["ssh", "my host", "sudo", "zfs"]
+        );
+    }
+
+    #[test]
+    fn test_parse_command_with_nested_quotes() {
+        assert_eq!(
+            parse_command(r#"ssh 'my " host' "su'do" zfs"#),
+            vec!["ssh", "my \" host", "su'do", "zfs"]
+        );
+    }
+
+    #[test]
+    fn test_parse_command_extra_spaces() {
+        assert_eq!(
+            parse_command("  ssh   \"  ho st  \"   sudo   zfs  "),
+            vec!["ssh", "  ho st  ", "sudo", "zfs"]
+        );
+    }
+
+    #[test]
+    fn test_parse_command_empty() {
+        assert_eq!(parse_command(""), Vec::<String>::new());
     }
 }
