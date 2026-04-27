@@ -14,26 +14,17 @@ pub struct Job {
     sender: Option<Sender<BackupEvent>>,
 }
 
-#[derive(Debug)]
 enum JobSide {
     Source,
     Destination,
 }
 
-#[derive(Debug)]
 struct Snapshot {
     snapshot: String,
     side: JobSide,
 }
 
 impl Job {
-    pub fn dump(&self) {
-        println!("Datasets: {:?}", self.datasets);
-        println!("Target: {}", self.target);
-        println!("Source ZFS Command: {:?}", self.source_zfs_command);
-        println!("Target ZFS Command: {:?}", self.target_zfs_command);
-    }
-
     fn send_event(&self, event: BackupEvent) {
         if let Some(sender) = &self.sender {
             sender.send(event).ok();
@@ -384,13 +375,6 @@ impl JobBuilder {
             sender: self.sender,
         })
     }
-}
-
-struct JobConfig {
-    sources: Vec<String>,
-    target: String,
-    source_zfs_command: Option<String>,
-    target_zfs_command: Option<String>,
 }
 
 #[cfg(test)]
