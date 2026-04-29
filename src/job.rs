@@ -57,7 +57,7 @@ impl Job {
         let name = snapshot.to_string();
         let mut cmd = self.get_side_command(side);
         cmd.extend(["snapshot", &name]);
-        command::exec_command(&cmd)?;
+        command::exec(&cmd)?;
         self.send_event(BackupEvent::SnapshotCreated(name.clone()));
         Ok(snapshot)
     }
@@ -70,7 +70,7 @@ impl Job {
         }
         cmd.extend(["-n", "-P"]);
         cmd.push(source);
-        let output = command::exec_command(&cmd)?;
+        let output = command::exec(&cmd)?;
         let size = output
             .lines()
             .last()
@@ -107,7 +107,7 @@ impl Job {
             ))],
             None => vec![],
         };
-        command::exec_piped_commands(&send_cmd, &receive_cmd, filters)?;
+        command::exec_pipe(&send_cmd, &receive_cmd, filters)?;
         self.send_event(BackupEvent::DatasetCompleted(source.to_string()));
         Ok(())
     }
@@ -115,7 +115,7 @@ impl Job {
     fn list_snapshot_ids(&self, source: &str, side: JobSide) -> Result<Vec<String>, String> {
         let mut cmd = self.get_side_command(side);
         cmd.extend(["list", "-H", "-o", "name", "-t", "snapshot", source]);
-        let output = command::exec_command(&cmd)?;
+        let output = command::exec(&cmd)?;
         let snapshots: Vec<&str> = output
             .split_whitespace()
             .map(|s| {
@@ -195,7 +195,7 @@ impl Job {
         let mut cmd = self.get_side_command(snapshot.side);
         let name = snapshot.to_string();
         cmd.extend(["destroy", &name]);
-        command::exec_command(&cmd)?;
+        command::exec(&cmd)?;
         self.send_event(BackupEvent::SnapshotDeleted(name.clone()));
         Ok(())
     }
@@ -205,7 +205,7 @@ impl Job {
             // Check the source exists
             let mut cmd = self.get_side_command(JobSide::Source);
             cmd.extend(["list", "-H", "-o", "name", source]);
-            let _ = command::exec_command(&cmd)?;
+            let _ = command::exec(&cmd)?;
 
             // Check whether the destination exists
             // TODO: This will assume the destination doesn't exist if the
@@ -213,7 +213,7 @@ impl Job {
             let dest = format!("{}/{}", self.target, source);
             cmd = self.get_side_command(JobSide::Target);
             cmd.extend(["list", "-H", "-o", "name", &dest]);
-            let dest_exists = command::exec_command(&cmd).is_ok();
+            let dest_exists = command::exec(&cmd).is_ok();
 
             // Run backup
             if dest_exists {
@@ -375,7 +375,7 @@ impl JobBuilder {
 
             let mut cmd: Vec<&str> = self.source_zfs_command.iter().map(|s| s.as_str()).collect();
             cmd.extend(args);
-            let output = command::exec_command(&cmd)?;
+            let output = command::exec(&cmd)?;
             datasets.extend(output.lines().map(str::to_string));
         }
         if datasets.is_empty() {

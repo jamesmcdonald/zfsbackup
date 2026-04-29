@@ -6,7 +6,12 @@ pub trait Filter {
     fn filter(&self, reader: Box<dyn Read>) -> Box<dyn Read>;
 }
 
-pub fn exec_command(command: &Vec<&str>) -> Result<String, String> {
+// TODO: Make this support quoting for args with spaces (and escape nested quotes)
+fn display_command(command: &Vec<&str>) -> String {
+    command.join(" ")
+}
+
+pub fn exec(command: &Vec<&str>) -> Result<String, String> {
     if command.is_empty() {
         return Err("Command is empty".to_string());
     }
@@ -14,11 +19,13 @@ pub fn exec_command(command: &Vec<&str>) -> Result<String, String> {
     if command.len() > 1 {
         cmd.args(&command[1..]);
     }
-    let output = cmd.output().map_err(|e| e.to_string())?;
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to run command {}: {}", command[0], e))?;
     if !output.status.success() {
         return Err(format!(
-            "Command {:?} failed with status {}: {}",
-            command,
+            "Command '{}' failed with status {}: {}",
+            display_command(command),
             output.status,
             String::from_utf8_lossy(&output.stderr)
         ));
@@ -27,7 +34,10 @@ pub fn exec_command(command: &Vec<&str>) -> Result<String, String> {
     Ok(output_str)
 }
 
-pub fn exec_piped_commands(
+/// Executes a pipeline of commands, where the output of the source command is passed through a
+/// series of filters before being piped into the destination command. The filters are applied in
+/// the order they are provided.
+pub fn exec_pipe(
     source: &Vec<&str>,
     dest: &Vec<&str>,
     filters: Vec<Box<dyn Filter>>,
