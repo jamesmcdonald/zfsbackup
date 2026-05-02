@@ -1,9 +1,13 @@
+use crate::progress::format_eta;
+
+use super::rate::RateTracker;
 use super::{BackupEvent, human_bytes};
 use std::{io::Write, sync::mpsc::Receiver};
 
 pub struct Progressor {
     receiver: Receiver<BackupEvent>,
     estimated_size: u64,
+    rate_tracker: RateTracker,
 }
 
 impl super::Progressor for Progressor {
@@ -11,7 +15,7 @@ impl super::Progressor for Progressor {
         while let Ok(event) = self.receiver.recv() {
             match event {
                 BackupEvent::Estimate(size) => {
-                    println!("Estimated total backup size: {}", human_bytes(size));
+                    println!("Estimated total backup size: {}", human_bytes(size as f64));
                     self.estimated_size = size;
                 }
                 BackupEvent::StartingFullBackup {
@@ -53,15 +57,34 @@ impl super::Progressor for Progressor {
                             } else {
                                 0.0
                             };
+                            self.rate_tracker.push(bytes);
+                            let rate = self.rate_tracker.rate();
+                            let rate_display = match rate {
+                                None => String::from("[unknown]"),
+                                Some(0.0) => {
+                                    String::from("[stalled] ETA heat death of the universe")
+                                }
+                                Some(rate) => {
+                                    let eta = if bytes > total {
+                                        String::from("any moment now")
+                                    } else {
+                                        let eta = (total - bytes) as f64 / rate;
+                                        format_eta(eta)
+                                    };
+                                    format!("{}/s ETA {}", human_bytes(rate), eta)
+                                }
+                            };
+
                             print!(
-                                "{:>3.0}% {}/{} transferred\r",
+                                "\x1b[2K{:>3.0}% {}/{} @ {}\r",
                                 percent * 100.0,
-                                human_bytes(bytes),
-                                human_bytes(total)
+                                human_bytes(bytes as f64),
+                                human_bytes(total as f64),
+                                rate_display,
                             );
                         }
                         None => {
-                            print!("{} transferred\r", human_bytes(bytes));
+                            print!("\x1b[2K{} transferred\r", human_bytes(bytes as f64));
                         }
                     }
                     std::io::stdout().flush().ok();
@@ -82,6 +105,7 @@ impl Progressor {
         Self {
             receiver,
             estimated_size: 0,
+            rate_tracker: RateTracker::new(100),
         }
     }
 }
