@@ -43,6 +43,9 @@ impl super::Progressor for Progressor {
                     println!("Deleted snapshot: {}", name);
                 }
                 BackupEvent::BytesTransferred { .. } => {}
+                BackupEvent::SendCompleted(bytes) => {
+                    println!("Send completed: {} bytes", bytes);
+                }
                 BackupEvent::DatasetCompleted(name) => {
                     println!("Completed backup of dataset: {}", name);
                     self.estimated_size = 0;

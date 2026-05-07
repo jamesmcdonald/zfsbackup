@@ -67,26 +67,31 @@ pub fn exec_pipe(
     let send_stdout = send_process.stdout.take().unwrap();
     let mut receive_stdin = receive_process.stdin.take().unwrap();
 
-    let mut reader: Box<dyn Read> = Box::new(send_stdout);
-    for filter in filters {
-        reader = filter.filter(reader);
+    {
+        let mut reader: Box<dyn Read> = Box::new(send_stdout);
+        for filter in filters {
+            reader = filter.filter(reader);
+        }
+
+        std::io::copy(&mut reader, &mut receive_stdin).map_err(|e| e.to_string())?;
     }
 
-    std::io::copy(&mut reader, &mut receive_stdin).map_err(|e| e.to_string())?;
-
-    let receive_status = receive_process.wait().map_err(|e| e.to_string())?;
+    // The send process will typically finish first. If it failed, terminate the
+    // receiver.
     let send_status = send_process.wait().map_err(|e| e.to_string())?;
+    if !send_status.success() {
+        receive_process.kill().ok();
+        return Err(format!(
+            "Send command {:?} failed with status {}",
+            source, send_status
+        ));
+    }
+    let receive_status = receive_process.wait().map_err(|e| e.to_string())?;
     if !receive_status.success() {
         send_process.kill().ok();
         return Err(format!(
             "Receive {:?} failed with status {}",
             dest, receive_status
-        ));
-    }
-    if !send_status.success() {
-        return Err(format!(
-            "Send command {:?} failed with status {}",
-            source, send_status
         ));
     }
     Ok(())

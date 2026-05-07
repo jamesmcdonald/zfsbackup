@@ -89,11 +89,17 @@ impl super::Progressor for Progressor {
                     }
                     std::io::stdout().flush().ok();
                 }
+                BackupEvent::SendCompleted(bytes) => {
+                    println!(
+                        "\x1b[2KSend completed at {}, awaiting receive completion",
+                        human_bytes(bytes as f64)
+                    );
+                }
                 BackupEvent::DatasetCompleted(name) => {
-                    println!("Completed backup of dataset: {}", name);
+                    println!("\x1b[2KCompleted backup of dataset: {}", name);
                 }
                 BackupEvent::DryrunCompleted(name) => {
-                    println!("Completed dry run backup of dataset: {}", name);
+                    println!("\x1b[2KCompleted dry run backup of dataset: {}", name);
                 }
             }
         }

@@ -16,7 +16,7 @@ fn human_bytes(bytes: f64) -> String {
         a /= 1024.0;
         i += 1;
     }
-    format!("{:.2} {:2}", a, units[i])
+    format!("{:.2} {}", a, units[i])
 }
 
 fn format_eta(seconds: f64) -> String {
@@ -47,6 +47,7 @@ pub enum BackupEvent {
         bytes: u64,
         estimated_total: Option<u64>,
     },
+    SendCompleted(u64),
     DatasetCompleted(String),
     DryrunCompleted(String),
 }

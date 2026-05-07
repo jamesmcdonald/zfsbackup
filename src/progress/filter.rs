@@ -29,6 +29,14 @@ impl<R: Read> Read for ByteCountReader<R> {
     }
 }
 
+impl<R: Read> Drop for ByteCountReader<R> {
+    fn drop(&mut self) {
+        self.sender
+            .send(BackupEvent::SendCompleted(self.bytes))
+            .ok();
+    }
+}
+
 impl<R: Read> ByteCountReader<R> {
     fn new(inner: R, sender: Sender<BackupEvent>, total: Option<u64>) -> Self {
         Self {
