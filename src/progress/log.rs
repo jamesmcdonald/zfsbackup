@@ -14,7 +14,7 @@ impl super::Progressor for Progressor {
                     println!("Estimated total backup size: {} bytes", size);
                     self.estimated_size = size;
                 }
-                BackupEvent::StartingFullBackup {
+                BackupEvent::FullBackupStart {
                     source,
                     dest,
                     index,
@@ -25,7 +25,7 @@ impl super::Progressor for Progressor {
                         source, dest, index, total
                     );
                 }
-                BackupEvent::StartingIncrementalBackup {
+                BackupEvent::IncrementalBackupStart {
                     source,
                     dest,
                     index,
@@ -36,21 +36,21 @@ impl super::Progressor for Progressor {
                         source, dest, index, total
                     );
                 }
-                BackupEvent::SnapshotCreated(name) => {
+                BackupEvent::SnapshotCreate(name) => {
                     println!("Created snapshot: {}", name);
                 }
-                BackupEvent::SnapshotDeleted(name) => {
+                BackupEvent::SnapshotDelete(name) => {
                     println!("Deleted snapshot: {}", name);
                 }
                 BackupEvent::BytesTransferred { .. } => {}
-                BackupEvent::SendCompleted(bytes) => {
+                BackupEvent::SendComplete(bytes) => {
                     println!("Send completed: {} bytes", bytes);
                 }
-                BackupEvent::DatasetCompleted(name) => {
+                BackupEvent::DatasetComplete(name) => {
                     println!("Completed backup of dataset: {}", name);
                     self.estimated_size = 0;
                 }
-                BackupEvent::DryrunCompleted(name) => {
+                BackupEvent::DryrunComplete(name) => {
                     println!("Completed dry run backup of dataset: {}", name);
                     self.estimated_size = 0;
                 }

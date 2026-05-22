@@ -58,7 +58,7 @@ impl Job {
         let mut cmd = self.get_side_command(side);
         cmd.extend(["snapshot", &name]);
         command::exec(&cmd)?;
-        self.send_event(BackupEvent::SnapshotCreated(name.clone()));
+        self.send_event(BackupEvent::SnapshotCreate(name.clone()));
         Ok(snapshot)
     }
 
@@ -108,7 +108,7 @@ impl Job {
             None => vec![],
         };
         command::exec_pipe(&send_cmd, &receive_cmd, filters)?;
-        self.send_event(BackupEvent::DatasetCompleted(source.to_string()));
+        self.send_event(BackupEvent::DatasetComplete(source.to_string()));
         Ok(())
     }
 
@@ -196,7 +196,7 @@ impl Job {
         let name = snapshot.to_string();
         cmd.extend(["destroy", &name]);
         command::exec(&cmd)?;
-        self.send_event(BackupEvent::SnapshotDeleted(name.clone()));
+        self.send_event(BackupEvent::SnapshotDelete(name.clone()));
         Ok(())
     }
 
@@ -217,7 +217,7 @@ impl Job {
 
             // Run backup
             if dest_exists {
-                self.send_event(BackupEvent::StartingIncrementalBackup {
+                self.send_event(BackupEvent::IncrementalBackupStart {
                     source: source.clone(),
                     dest: dest.clone(),
                     index: index + 1,
@@ -234,13 +234,13 @@ impl Job {
                     .estimate(&snapshot.to_string(), Some(&inc_snapshot))
                     .ok();
                 if !execute {
-                    self.send_event(BackupEvent::DryrunCompleted(source.clone()));
+                    self.send_event(BackupEvent::DryrunComplete(source.clone()));
                     self.delete_snapshot(snapshot)?;
                     continue;
                 }
                 self.send_receive(&snapshot.to_string(), &dest, Some(&inc_snapshot), total)?;
             } else {
-                self.send_event(BackupEvent::StartingFullBackup {
+                self.send_event(BackupEvent::FullBackupStart {
                     source: source.clone(),
                     dest: dest.clone(),
                     index: index + 1,
@@ -249,7 +249,7 @@ impl Job {
                 let snapshot = self.create_snapshot(source, JobSide::Source)?;
                 let total = self.estimate(&snapshot.to_string(), None).ok();
                 if !execute {
-                    self.send_event(BackupEvent::DryrunCompleted(source.clone()));
+                    self.send_event(BackupEvent::DryrunComplete(source.clone()));
                     self.delete_snapshot(snapshot)?;
                     continue;
                 }

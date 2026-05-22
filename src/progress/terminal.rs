@@ -18,7 +18,7 @@ impl super::Progressor for Progressor {
                     println!("Estimated total backup size: {}", human_bytes(size as f64));
                     self.estimated_size = size;
                 }
-                BackupEvent::StartingFullBackup {
+                BackupEvent::FullBackupStart {
                     source,
                     dest,
                     index,
@@ -29,7 +29,7 @@ impl super::Progressor for Progressor {
                         source, dest, index, total
                     );
                 }
-                BackupEvent::StartingIncrementalBackup {
+                BackupEvent::IncrementalBackupStart {
                     source,
                     dest,
                     index,
@@ -40,10 +40,10 @@ impl super::Progressor for Progressor {
                         source, dest, index, total
                     );
                 }
-                BackupEvent::SnapshotCreated(name) => {
+                BackupEvent::SnapshotCreate(name) => {
                     println!("Created snapshot: {}", name);
                 }
-                BackupEvent::SnapshotDeleted(name) => {
+                BackupEvent::SnapshotDelete(name) => {
                     println!("Deleted snapshot: {}", name);
                 }
                 BackupEvent::BytesTransferred {
@@ -89,16 +89,16 @@ impl super::Progressor for Progressor {
                     }
                     std::io::stdout().flush().ok();
                 }
-                BackupEvent::SendCompleted(bytes) => {
+                BackupEvent::SendComplete(bytes) => {
                     println!(
                         "\x1b[2KSend completed at {}, awaiting receive completion",
                         human_bytes(bytes as f64)
                     );
                 }
-                BackupEvent::DatasetCompleted(name) => {
+                BackupEvent::DatasetComplete(name) => {
                     println!("\x1b[2KCompleted backup of dataset: {}", name);
                 }
-                BackupEvent::DryrunCompleted(name) => {
+                BackupEvent::DryrunComplete(name) => {
                     println!("\x1b[2KCompleted dry run backup of dataset: {}", name);
                 }
             }

@@ -31,9 +31,7 @@ impl<R: Read> Read for ByteCountReader<R> {
 
 impl<R: Read> Drop for ByteCountReader<R> {
     fn drop(&mut self) {
-        self.sender
-            .send(BackupEvent::SendCompleted(self.bytes))
-            .ok();
+        self.sender.send(BackupEvent::SendComplete(self.bytes)).ok();
     }
 }
 

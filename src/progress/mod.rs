@@ -29,25 +29,25 @@ fn format_eta(seconds: f64) -> String {
 
 pub enum BackupEvent {
     Estimate(u64),
-    StartingFullBackup {
+    FullBackupStart {
         source: String,
         dest: String,
         index: usize,
         total: usize,
     },
-    StartingIncrementalBackup {
+    IncrementalBackupStart {
         source: String,
         dest: String,
         index: usize,
         total: usize,
     },
-    SnapshotCreated(String),
-    SnapshotDeleted(String),
+    SnapshotCreate(String),
+    SnapshotDelete(String),
     BytesTransferred {
         bytes: u64,
         estimated_total: Option<u64>,
     },
-    SendCompleted(u64),
-    DatasetCompleted(String),
-    DryrunCompleted(String),
+    SendComplete(u64),
+    DatasetComplete(String),
+    DryrunComplete(String),
 }
