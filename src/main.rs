@@ -5,7 +5,7 @@ use std::io::IsTerminal;
 use std::sync::mpsc::channel;
 use std::thread;
 use zfsbackup::job::JobBuilder;
-use zfsbackup::progress::{Progressor, log, terminal};
+use zfsbackup::progress::{Progressor, curt, log, terminal};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -29,6 +29,9 @@ struct Args {
     #[arg(short, long)]
     retain: Option<usize>,
 
+    #[arg(short, long)]
+    progressor: Option<String>,
+
     datasets: Vec<String>,
 }
 
@@ -49,10 +52,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let (tx, rx) = channel();
-    let mut pr: Box<dyn Progressor> = if std::io::stdout().is_terminal() {
-        Box::new(terminal::Progressor::new(rx))
-    } else {
-        Box::new(log::Progressor::new(rx))
+    let mut pr: Box<dyn Progressor> = match args.progressor {
+        Some(name) => match name.as_str() {
+            "curt" => Box::new(curt::Progressor::new(rx)),
+            "terminal" => Box::new(terminal::Progressor::new(rx)),
+            "log" => Box::new(log::Progressor::new(rx)),
+            _ => {
+                eprintln!("progressor {} not found, defaulting to 'log'", name);
+                Box::new(log::Progressor::new(rx))
+            }
+        },
+        None => {
+            if std::io::stdout().is_terminal() {
+                Box::new(terminal::Progressor::new(rx))
+            } else {
+                Box::new(log::Progressor::new(rx))
+            }
+        }
     };
     let handle = thread::spawn(move || pr.run());
     builder = builder.sender(tx);
