@@ -273,6 +273,7 @@ pub struct JobBuilder {
     target_zfs_command: Vec<String>,
     retain: usize,
     sender: Option<Sender<BackupEvent>>,
+    exclude: Vec<String>,
 }
 
 /// Parse a command string into a vector of strings, splitting on whitespace.
@@ -329,6 +330,7 @@ impl JobBuilder {
             target_zfs_command: vec!["zfs".to_string()],
             retain: 2,
             sender: None,
+            exclude: vec![],
         }
     }
 
@@ -361,6 +363,11 @@ impl JobBuilder {
         self
     }
 
+    pub fn exclude(mut self, exclude: Vec<String>) -> Self {
+        self.exclude = exclude;
+        self
+    }
+
     pub fn build(self) -> Result<Job, String> {
         let mut datasets: IndexSet<String> = IndexSet::new();
         for source in &self.sources {
@@ -377,6 +384,9 @@ impl JobBuilder {
             cmd.extend(args);
             let output = command::exec(&cmd)?;
             datasets.extend(output.lines().map(str::to_string));
+        }
+        for exclude in &self.exclude {
+            datasets.retain(|d| !d.starts_with(exclude));
         }
         if datasets.is_empty() {
             return Err(String::from("no matching source datasets found"));

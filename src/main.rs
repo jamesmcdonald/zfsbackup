@@ -32,6 +32,9 @@ struct Args {
     #[arg(short, long)]
     progressor: Option<String>,
 
+    #[arg(short, long)]
+    exclude: Vec<String>,
+
     datasets: Vec<String>,
 }
 
@@ -50,6 +53,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     if let Some(retain) = args.retain {
         builder = builder.retain(retain);
     }
+    builder = builder.exclude(args.exclude);
 
     let (tx, rx) = channel();
     let mut pr: Box<dyn Progressor> = match args.progressor {
